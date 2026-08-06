@@ -1,0 +1,97 @@
+# Gas Town Console
+
+A web admin console for [Gas Town](https://github.com/steveyegge/gastown), the multi-agent
+orchestrator. One page that answers *what are my agents doing, what work is queued, and what
+needs me* — on a laptop or a phone.
+
+Python standard library only. No npm, no pip, no build step.
+
+![Overview](docs/overview-dark.png)
+
+## Try it in 10 seconds
+
+Demo mode serves synthetic data and never runs `gt`, so you can look before you install
+anything:
+
+```bash
+git clone https://github.com/YOUR_USER/gastown-console.git
+cd gastown-console
+python3 server.py --demo
+# → http://localhost:8099
+```
+
+## Use it for real
+
+```bash
+./start.sh          # localhost only
+```
+
+It reads a live Gas Town workspace via the `gt` CLI. Nothing is configured — it finds your
+town at `~/gt` (override with `--town`).
+
+## What's in it
+
+| Tab | What it shows |
+|---|---|
+| **Overview** | Agents up, rigs, ready work, active hooks, escalations, unread mail · rig health · priority histogram · recently closed |
+| **Work** | Every ready issue across town, with live search and source/priority filters |
+| **Agents** | Every agent in every rig — running/idle/working, session, role, mail |
+| **Mail** | Inbox, plus compose with address autocomplete and voice dictation |
+| **Activity** | The `gt trail` event feed |
+
+Dark and light themes, auto-refresh, and a layout that works on a phone.
+
+<p align="center">
+  <img src="docs/mobile.png" width="290" alt="Mobile layout">
+  <img src="docs/overview-light.png" width="520" alt="Light theme">
+</p>
+
+## Why it's built this way
+
+`gt status` takes several seconds, and concurrent `gt` calls contend on the Dolt server. So
+the server **never shells out on the request path**. A background scheduler refreshes each
+panel on its own cadence into a cache, and HTTP always serves that cache — requests answer in
+single-digit milliseconds no matter how slow the CLI is. Panels carry their own age, and a
+failed refresh keeps the last good data rather than blanking the panel.
+
+## Security
+
+The console is **read-only except for one allowlisted write**: `POST /api/mail`, which maps to
+`gt mail send`. There is no shell passthrough and no command palette.
+
+Sending mail nudges the recipient agent awake, and Gas Town agents typically run with
+permission checks disabled — so treat the compose box as "start an autonomous agent", not
+"send a chat message".
+
+Binding beyond localhost auto-generates a token:
+
+```bash
+./start.sh --lan     # binds 0.0.0.0, prints a URL carrying the token
+```
+
+Even so, prefer a private network overlay (Tailscale, WireGuard) over exposing this to a LAN
+you don't control. The token is a speed bump, not authentication.
+
+## Requirements
+
+- Python 3.9+
+- [Gas Town](https://github.com/steveyegge/gastown) (`gt` on your `PATH`) — except in `--demo`
+- macOS or Linux
+
+## Options
+
+```
+python3 server.py [--port 8099] [--bind 127.0.0.1] [--town ~/gt]
+                  [--token TOKEN] [--no-auth] [--demo]
+```
+
+`?theme=dark` or `?theme=light` forces a theme, which is handy for a wall display.
+
+## Not affiliated
+
+An independent companion tool. Not affiliated with or endorsed by Gas Town or its authors. It
+talks to the `gt` CLI's JSON output and contains none of Gas Town's code.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

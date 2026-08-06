@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Gas Town · Admin</title>
+<link rel="stylesheet" href="/static/app.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>⛽</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">⛽</span>
+    <div class="brand-text">
+      <strong>Gas Town</strong>
+      <span id="town-name" class="muted">—</span>
+    </div>
+  </div>
+
+  <div class="services" id="services"></div>
+
+  <div class="topbar-actions">
+    <button id="refresh" class="btn" title="Refresh now">
+      <svg viewBox="0 0 24 24" class="ico"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
+      <span class="btn-label">Refresh</span>
+    </button>
+    <label class="toggle" title="Auto-refresh every 8 seconds">
+      <input type="checkbox" id="auto" checked><span class="track"></span>
+      <span class="toggle-label">Auto</span>
+    </label>
+    <button id="theme" class="btn icon-only" title="Toggle theme">
+      <svg viewBox="0 0 24 24" class="ico"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+    </button>
+  </div>
+</header>
+
+<nav class="tabs" id="tabs">
+  <button class="tab is-active" data-view="overview">Overview</button>
+  <button class="tab" data-view="work">Work <span class="pill" id="pill-work">0</span></button>
+  <button class="tab" data-view="agents">Agents <span class="pill" id="pill-agents">0</span></button>
+  <button class="tab" data-view="mail">Mail <span class="pill" id="pill-mail">0</span></button>
+  <button class="tab" data-view="activity">Activity</button>
+</nav>
+
+<main>
+  <section class="view is-active" id="view-overview">
+    <div class="kpis" id="kpis"></div>
+    <div class="grid">
+      <article class="card span-2">
+        <header class="card-head"><h2>Rigs</h2><span class="muted" id="rig-count"></span></header>
+        <div id="rigs" class="card-body"></div>
+      </article>
+      <article class="card">
+        <header class="card-head"><h2>Escalations</h2></header>
+        <div id="escalations" class="card-body"></div>
+      </article>
+      <article class="card">
+        <header class="card-head"><h2>Work by priority</h2></header>
+        <div id="prio" class="card-body"></div>
+      </article>
+      <article class="card span-2">
+        <header class="card-head"><h2>Recently closed</h2></header>
+        <div id="changelog" class="card-body scroll-y"></div>
+      </article>
+    </div>
+  </section>
+
+  <section class="view" id="view-work">
+    <div class="toolbar">
+      <div class="search">
+        <svg viewBox="0 0 24 24" class="ico"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="work-q" type="search" placeholder="Filter by title, id or source…" autocomplete="off">
+      </div>
+      <div class="chips" id="work-chips"></div>
+    </div>
+    <div id="work" class="stack"></div>
+  </section>
+
+  <section class="view" id="view-agents">
+    <div id="agents" class="stack"></div>
+  </section>
+
+  <section class="view" id="view-mail">
+    <article class="card compose">
+      <header class="card-head"><h2>Send to an agent</h2></header>
+      <div class="card-body">
+        <div class="field-row">
+          <label class="field">
+            <span>To</span>
+            <input id="m-to" list="agent-addresses" placeholder="mayor/" autocomplete="off">
+            <datalist id="agent-addresses"></datalist>
+          </label>
+          <label class="field narrow">
+            <span>Type</span>
+            <select id="m-type">
+              <option value="notification">notification</option>
+              <option value="task">task</option>
+              <option value="scavenge">scavenge</option>
+            </select>
+          </label>
+          <label class="field narrow">
+            <span>Priority</span>
+            <select id="m-priority">
+              <option value="0">0 urgent</option>
+              <option value="1">1 high</option>
+              <option value="2" selected>2 normal</option>
+              <option value="3">3 low</option>
+            </select>
+          </label>
+        </div>
+        <label class="field">
+          <span>Subject</span>
+          <input id="m-subject" placeholder="One line — what this is about">
+        </label>
+        <label class="field">
+          <span>Message</span>
+          <div class="textarea-wrap">
+            <textarea id="m-body" rows="6" placeholder="Dictate with the mic, or use your keyboard's dictation key…"></textarea>
+            <button id="mic" class="mic" title="Dictate">
+              <svg viewBox="0 0 24 24" class="ico"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4"/></svg>
+            </button>
+          </div>
+        </label>
+        <div class="compose-foot">
+          <span id="m-status" class="muted"></span>
+          <button id="m-send" class="btn primary">Send</button>
+        </div>
+      </div>
+    </article>
+    <div id="mail" class="stack"></div>
+  </section>
+
+  <section class="view" id="view-activity">
+    <div id="trail" class="stack"></div>
+  </section>
+</main>
+
+<footer class="statusbar">
+  <span id="updated" class="muted">loading…</span>
+  <span class="muted sep">·</span>
+  <span class="muted">read-only except mail</span>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
