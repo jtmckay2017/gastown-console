@@ -14,7 +14,7 @@ Demo mode serves synthetic data and never runs `gt`, so you can look before you 
 anything:
 
 ```bash
-git clone https://github.com/YOUR_USER/gastown-console.git
+git clone https://github.com/jtmckay2017/gastown-console.git
 cd gastown-console
 python3 server.py --demo
 # → http://localhost:8099
