@@ -8,10 +8,52 @@ const pick = (o, keys, dflt = "") => {
 };
 const num = (v) => (typeof v === "number" ? v : 0);
 
+/* ---------------- ordering ----------------
+   gt promises no order, so every list asserts its own instead of inheriting one.
+   Newest first, sorted BEFORE any truncation, missing or unparseable timestamps
+   last, and ties broken on a stable identity so an 8s auto-refresh never
+   reshuffles rows. Field spelling differs per list, so timestamps are read
+   through pick() with these alias lists. */
+const CHANGELOG_DATE = ["closed_at", "updated_at", "created_at"];
+const MAIL_DATE = ["created_at", "sent_at", "timestamp"];
+const ESC_DATE = ["created_at", "at", "timestamp", "updated_at"];
+const TRAIL_DATE = ["at", "created_at", "timestamp", "time", "updated_at"];
+const WORK_DATE = ["updated_at", "created_at"];
+
+/** Epoch millis for a gt timestamp (ISO string or epoch seconds), or null. */
+function stamp(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const t = typeof v === "number" ? v * 1000 : Date.parse(v);
+  return Number.isFinite(t) ? t : null;
+}
+
+/** Newest first. Undated rows sink to the bottom rather than floating to the top. */
+function byNewest(items, dateKeys, idKeys = ["id", "address", "name"]) {
+  return items
+    .map((it, i) => ({ it, i, t: stamp(pick(it, dateKeys, null)) }))
+    .sort((a, b) => {
+      if (a.t === null || b.t === null) {
+        if (a.t !== b.t) return a.t === null ? 1 : -1;   // undated last
+      } else if (a.t !== b.t) {
+        return b.t - a.t;
+      }
+      const ai = String(pick(a.it, idKeys, "")), bi = String(pick(b.it, idKeys, ""));
+      if (ai !== bi) return ai < bi ? -1 : 1;            // deterministic tie-break
+      return a.i - b.i;
+    })
+    .map((x) => x.it);
+}
+
+/** For lists gt returns with no timestamp at all — gt builds some of them from Go
+    maps, whose iteration order is randomised, so they still need a fixed order. */
+const byKey = (items, keyFn) => [...items].sort((a, b) => {
+  const x = keyFn(a), y = keyFn(b);
+  return x < y ? -1 : x > y ? 1 : 0;
+});
+
 function ago(ts) {
-  if (!ts) return "";
-  const t = typeof ts === "number" ? ts * 1000 : Date.parse(ts);
-  if (!t || Number.isNaN(t)) return "";
+  const t = stamp(ts);
+  if (t === null) return "";
   const s = Math.max(0, (Date.now() - t) / 1000);
   if (s < 60) return `${Math.round(s)}s ago`;
   if (s < 3600) return `${Math.round(s / 60)}m ago`;
@@ -116,7 +158,10 @@ function renderTop(s) {
 function allAgents(s) {
   const town = (s.agents || []).map((a) => ({ ...a, rig: "town" }));
   const rigged = (s.rigs || []).flatMap((r) => (r.agents || []).map((a) => ({ ...a, rig: r.name })));
-  return [...town, ...rigged];
+  // Agents carry no timestamp (verified against live `gt status --json`), so there is
+  // nothing to sort newest-first by; order town first, then rig, then address.
+  return byKey([...town, ...rigged], (a) =>
+    `${a.rig === "town" ? "0" : "1" + a.rig}\u0000${a.address || a.name || ""}`);
 }
 
 function renderKpis(s) {
@@ -150,7 +195,7 @@ function renderKpis(s) {
 function renderRigs(s) {
   if (loadingOf("status")) return void ($("#rigs").innerHTML = SKEL);
   const meta = Object.fromEntries((dataOf("rigs", []) || []).map((r) => [r.name, r]));
-  const rigs = s.rigs || [];
+  const rigs = byKey(s.rigs || [], (r) => r.name || "");   // no timestamp on a rig; keep it fixed
   $("#rig-count").textContent = rigs.length ? `${rigs.length} registered` : "";
   $("#rigs").innerHTML = errNote("status") + (rigs.length ? rigs.map((r) => {
     const m = meta[r.name] || {};
@@ -175,15 +220,18 @@ function renderRigs(s) {
 
 function renderEscalations() {
   if (loadingOf("escalations")) return void ($("#escalations").innerHTML = SKEL);
-  const items = dataOf("escalations", []) || [];
-  $("#escalations").innerHTML = errNote("escalations") + (items.length ? items.map((e) => `
+  const items = byNewest(dataOf("escalations", []) || [], ESC_DATE);
+  $("#escalations").innerHTML = errNote("escalations") + (items.length ? items.map((e) => {
+    const at = ago(pick(e, ESC_DATE));
+    return `
     <div class="row">
       <div class="row-main">
         <div class="title wrap">${esc(pick(e, ["title", "summary"], "(untitled)"))}</div>
-        <div class="sub"><span class="mono">${esc(pick(e, ["id"]))}</span>${e.created_at ? `<span>${esc(ago(e.created_at))}</span>` : ""}</div>
+        <div class="sub"><span class="mono">${esc(pick(e, ["id"]))}</span>${at ? `<span>${esc(at)}</span>` : ""}</div>
       </div>
       <div class="row-side"><span class="badge bad">escalated</span></div>
-    </div>`).join("") : empty("Nothing escalated"));
+    </div>`;
+  }).join("") : empty("Nothing escalated"));
 }
 
 function renderPriority() {
@@ -202,12 +250,13 @@ function renderPriority() {
 
 function renderChangelog() {
   if (loadingOf("changelog")) return void ($("#changelog").innerHTML = SKEL);
-  const items = (dataOf("changelog", []) || []).slice(0, 40);
+  // Sort before the slice — truncating arrival order would drop the newest closures.
+  const items = byNewest(dataOf("changelog", []) || [], CHANGELOG_DATE).slice(0, 40);
   $("#changelog").innerHTML = errNote("changelog") + (items.length ? items.map((c) => `
     <div class="row">
       <div class="row-main">
         <div class="title">${esc(c.title)}</div>
-        <div class="sub"><span class="mono">${esc(c.id)}</span><span>${esc(c.rig || "")}</span><span>${esc(ago(c.closed_at))}</span></div>
+        <div class="sub"><span class="mono">${esc(c.id)}</span><span>${esc(c.rig || "")}</span><span>${esc(ago(pick(c, CHANGELOG_DATE)))}</span></div>
       </div>
     </div>`).join("") : empty("Nothing closed yet"));
 }
@@ -217,7 +266,9 @@ $("#work-q").oninput = (e) => { state.q = e.target.value.toLowerCase(); renderWo
 
 function renderWork() {
   const ready = dataOf("ready", {}) || {};
-  const sources = ready.sources || [];
+  // Sources are a fixed set (town + rigs) with no timestamp of their own, so the
+  // groups get a fixed order — town first — and the issues inside sort newest-first.
+  const sources = byKey(ready.sources || [], (s) => (s.name === "town" ? "0" : "1" + s.name));
   const chips = [["all", "All"], ...sources.map((s) => [s.name, s.name])];
   $("#work-chips").innerHTML = chips.map(([k, label]) =>
     `<button class="chip ${state.source === k ? "is-active" : ""}" data-src="${esc(k)}">${esc(label)}</button>`).join("")
@@ -229,11 +280,11 @@ function renderWork() {
   const html = sources
     .filter((s) => state.source === "all" || s.name === state.source)
     .map((s) => {
-      const items = (s.issues || []).filter((i) => {
+      const items = byNewest((s.issues || []).filter((i) => {
         if (state.prio !== "all" && String(i.priority) !== state.prio) return false;
         if (!state.q) return true;
         return `${i.id} ${i.title} ${s.name}`.toLowerCase().includes(state.q);
-      });
+      }), WORK_DATE);
       if (!items.length) return "";
       return `<div class="group-head">${esc(s.name)} · ${items.length}</div>` + items.map((i) => `
         <div class="row row-card">
@@ -242,7 +293,7 @@ function renderWork() {
             <div class="sub">
               <span class="mono">${esc(i.id)}</span>
               ${i.parent ? `<span>↳ ${esc(i.parent)}</span>` : ""}
-              <span>${esc(ago(i.updated_at || i.created_at))}</span>
+              <span>${esc(ago(pick(i, WORK_DATE)))}</span>
             </div>
           </div>
           <div class="row-side">
@@ -284,16 +335,20 @@ function renderAgents(s) {
 /* ---------------- mail ---------------- */
 function renderMail() {
   if (loadingOf("mail")) return void ($("#mail").innerHTML = SKEL);
-  const items = dataOf("mail", []) || [];
+  // Unread first — it beats newest-first when the two conflict — and newest-first
+  // orders within each group.
+  const unreadOf = (m) => !pick(m, ["read", "is_read"], false);
+  const dated = byNewest(dataOf("mail", []) || [], MAIL_DATE);
+  const items = [...dated.filter(unreadOf), ...dated.filter((m) => !unreadOf(m))];
   $("#mail").innerHTML = errNote("mail") + (items.length ? items.map((m) => {
-    const unread = !pick(m, ["read", "is_read"], false);
+    const unread = unreadOf(m);
     return `
       <div class="row row-card">
         <div class="row-main">
           <div class="title wrap">${esc(pick(m, ["subject", "title"], "(no subject)"))}</div>
           <div class="sub">
             <span>from ${esc(pick(m, ["from", "sender", "from_address"], "?"))}</span>
-            <span>${esc(ago(pick(m, ["created_at", "sent_at", "timestamp"])))}</span>
+            <span>${esc(ago(pick(m, MAIL_DATE)))}</span>
             ${m.type ? `<span class="badge">${esc(m.type)}</span>` : ""}
           </div>
         </div>
@@ -350,7 +405,7 @@ else {
 function renderTrail() {
   if (loadingOf("trail")) return void ($("#trail").innerHTML = SKEL);
   const raw = dataOf("trail", []) || [];
-  const items = Array.isArray(raw) ? raw : (raw.items || raw.entries || []);
+  const items = byNewest(Array.isArray(raw) ? raw : (raw.items || raw.entries || []), TRAIL_DATE);
   $("#trail").innerHTML = errNote("trail") + (items.length ? items.map((t) => `
     <div class="row row-card">
       <div class="row-main">
@@ -359,7 +414,7 @@ function renderTrail() {
           ${pick(t, ["agent", "actor", "who"]) ? `<span>${esc(pick(t, ["agent", "actor", "who"]))}</span>` : ""}
           ${pick(t, ["rig"]) ? `<span>${esc(t.rig)}</span>` : ""}
           ${pick(t, ["id"]) ? `<span class="mono">${esc(t.id)}</span>` : ""}
-          <span>${esc(ago(pick(t, ["at", "created_at", "timestamp", "time", "updated_at"])))}</span>
+          <span>${esc(ago(pick(t, TRAIL_DATE)))}</span>
         </div>
       </div>
     </div>`).join("") : empty("No recent activity"));

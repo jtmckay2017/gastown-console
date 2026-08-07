@@ -70,10 +70,10 @@ def fixtures():
                 _issue("hq-48m", "Adopting an existing repo skips provisioning", 2, "bug", hours=6),
             ]},
             {"name": "web_platform", "issues": [
-                _issue("wp-101", "Session cookie is not rotated after privilege change", 1, "bug", hours=2),
-                _issue("wp-104", "Checkout flow loses cart on slow networks", 1, "bug", hours=4),
                 _issue("wp-110", "Design system: consolidate 6 button variants into 2", 2, "epic", hours=9),
+                _issue("wp-101", "Session cookie is not rotated after privilege change", 1, "bug", hours=2),
                 _issue("wp-111", "Replace hand-rolled date parsing with the shared helper", 3, "task", "wp-110", 20),
+                _issue("wp-104", "Checkout flow loses cart on slow networks", 1, "bug", hours=4),
             ]},
             {"name": "billing_api", "issues": [
                 _issue("ba-31", "Invoice totals drift by a cent on split refunds", 0, "bug", hours=1),
@@ -98,34 +98,36 @@ def fixtures():
         "status": status,
         "rigs": rigs,
         "ready": ready,
+        # Every list below arrives deliberately out of order — the console sorts each one
+        # newest-first itself (gc-feh), and a pre-sorted fixture would hide a regression.
         "mail": [
-            {"id": "m-9f2", "from": "web_platform/Toast", "subject": "PR ready: session rotation fix",
-             "type": "task", "read": False, "created_at": _ago(minutes=6)},
-            {"id": "m-9e7", "from": "billing_api/refinery", "subject": "Merge queue drained — 3 landed",
-             "type": "notification", "read": False, "created_at": _ago(minutes=41)},
             {"id": "m-9c1", "from": "deacon/", "subject": "Nightly patrol clean across 3 rigs",
              "type": "notification", "read": True, "created_at": _ago(hours=8)},
+            {"id": "m-9e7", "from": "billing_api/refinery", "subject": "Merge queue drained — 3 landed",
+             "type": "notification", "read": False, "created_at": _ago(minutes=41)},
+            {"id": "m-9f2", "from": "web_platform/Toast", "subject": "PR ready: session rotation fix",
+             "type": "task", "read": False, "created_at": _ago(minutes=6)},
         ],
         "escalations": [
             {"id": "ba-31", "title": "[HIGH] Invoice totals drift on split refunds — needs a human call",
              "created_at": _ago(hours=1)},
         ],
         "trail": [
+            {"title": "slung ma-12 to Nux", "agent": "mayor/", "rig": "mobile_app", "at": _ago(minutes=35)},
+            {"title": "restarted a stalled session", "agent": "web_platform/witness",
+             "rig": "web_platform", "at": _ago(hours=2)},
             {"title": "opened PR #482 — rotate session cookie on privilege change",
              "agent": "web_platform/Toast", "rig": "web_platform", "at": _ago(minutes=4)},
             {"title": "merged #479 into main", "agent": "billing_api/refinery",
              "rig": "billing_api", "at": _ago(minutes=22)},
-            {"title": "slung ma-12 to Nux", "agent": "mayor/", "rig": "mobile_app", "at": _ago(minutes=35)},
-            {"title": "restarted a stalled session", "agent": "web_platform/witness",
-             "rig": "web_platform", "at": _ago(hours=2)},
         ],
         "changelog": [
+            {"id": "ma-9", "title": "Fix crash on empty push payload", "type": "bug",
+             "rig": "mobile_app", "closed_at": _ago(days=1), "close_reason": "Merged in #471"},
             {"id": "wp-98", "title": "Cache the pricing table per request", "type": "task",
              "rig": "web_platform", "closed_at": _ago(hours=3), "close_reason": "Merged in #479"},
             {"id": "ba-29", "title": "Backfill missing customer tax ids", "type": "chore",
              "rig": "billing_api", "closed_at": _ago(hours=7), "close_reason": "Merged in #477"},
-            {"id": "ma-9", "title": "Fix crash on empty push payload", "type": "bug",
-             "rig": "mobile_app", "closed_at": _ago(days=1), "close_reason": "Merged in #471"},
         ],
         "convoys": [
             {"id": "cv-3", "name": "checkout-hardening", "rig": "web_platform",
