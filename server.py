@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
+import backlog
 import flight
 import models
 import panes
@@ -58,12 +59,29 @@ def watched_panes():
     return panes.watched(_status())
 
 
+# The two reads that fan out per rig learn the rig list from the status panel, so they
+# cannot usefully run before it lands. On the first scheduler tick every read is due at
+# once: one that fanned out over a town it could not see yet would find only the town's
+# own beads repo and then cache that answer — a town with one rig in it — for a whole
+# interval. Saying not-yet costs a beat; refresh() brings a panel that has never landed
+# back on the cold-start floor rather than on its own cadence.
+COLD = "waiting for the status read"
+
+
 def work_in_flight():
     """The "flight" read: every bead that is not open and not closed, and who holds
     it. `gt ready` drops a bead the moment somebody picks it up and no `gt` read
     carries an agent's work, so this is the console's only answer to "what is being
     worked on right now". One `bd` call per beads repo in town — see flight.py."""
-    return flight.in_flight(_status(), TOWN)
+    return flight.in_flight(_status(), TOWN) if _status() is not None else (None, COLD)
+
+
+def planned_work():
+    """The "backlog" read: every rig's whole backlog with its structure intact — the
+    epic hierarchy, the blocks edges, and why each closed bead closed. The three reads
+    above answer "what is happening"; this one answers "what did we plan", which is
+    what a ceremony is for and what no `gt` read carries. See backlog.py."""
+    return backlog.by_rig(_status(), TOWN) if _status() is not None else (None, COLD)
 
 
 # name -> (source, seconds between background refreshes). A source is `gt` argv —
@@ -77,6 +95,10 @@ READS = {
     # cadence as ready on purpose — they answer two halves of one question, and a
     # visible skew between them reads as a bug rather than as staleness.
     "flight":      (work_in_flight, 20),
+    # The slowest read in the table, and the largest payload: `bd list --all` over
+    # every rig. A plan is not a live signal — it changes when somebody files or closes
+    # a bead, not between two blinks — so it is read on the order of minutes.
+    "backlog":     (planned_work, 180),
     "mail":        (["mail", "inbox", "--json"], 12),
     "escalations": (["escalate", "list", "--json"], 45),
     "trail":       (["trail", "--limit", "40", "--json"], 20),
@@ -102,6 +124,10 @@ READS = {
 
 # Concurrent `gt` calls contend on the Dolt server, so keep the fan-out small.
 POOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="gt")
+# A panel that has never landed retries on this floor instead of on its own cadence.
+# The slow cadences are tuned for steady state; making a panel that has nothing to show
+# wait three minutes for a second attempt is not what they are for.
+COLD_RETRY = 8
 _cache = {n: {"data": None, "error": None, "at": 0.0, "loading": True, "due": 0.0, "inflight": False}
           for n in READS}
 _guard = threading.Lock()
@@ -145,7 +171,8 @@ def refresh(name):
     with _guard:
         e = _cache[name]
         e["at"] = time.time()
-        e["due"] = e["at"] + interval
+        e["due"] = e["at"] + (interval if data is not None or e["data"] is not None
+                              else min(interval, COLD_RETRY))
         e["inflight"] = False
         e["loading"] = False
         if err and e["data"] is not None:

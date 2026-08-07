@@ -17,18 +17,15 @@ worth more attention rather than less.
 
 It shells out to `bd` rather than `gt` because `gt` has no cross-status list, and once
 per beads repo because every rig keeps its own — the town's, then one per rig, around
-100ms each. Like models.py and panes.py it is declared in `READS` and runs only on the
-scheduler; it has no business on a request path. `bd list --json` returns whole beads,
-description and acceptance criteria included, which is kilobytes apiece — _project()
-keeps only the fields the front end draws, so the snapshot stays small.
+100ms each. Every one of those calls goes through beads.py, which is what makes the
+per-rig directory impossible to forget; read its header before touching this. Like
+models.py and panes.py it is declared in `READS` and runs only on the scheduler; it
+has no business on a request path. `bd list --json` returns whole beads, description
+and acceptance criteria included, which is kilobytes apiece — _project() keeps only
+the fields the front end draws, so the snapshot stays small.
 """
 
-import json
-import os
-import shutil
-import subprocess
-
-PATH = "/opt/homebrew/bin:/usr/local/bin:" + os.environ.get("PATH", "")
+import beads
 
 # Not open, not closed. `hooked` leads because it is what a sling actually sets and is
 # where nearly all of this town's live work sits.
@@ -44,51 +41,6 @@ KEEP = ("id", "title", "status", "priority", "issue_type", "assignee",
         "parent", "created_at", "updated_at")
 # A town with more work in flight than this is not one this panel can usefully draw.
 MAX_ITEMS = 200
-
-
-def _bd(repo, timeout=20):
-    """One repo's in-flight beads, as (list, error). Never raises."""
-    exe = shutil.which("bd", path=PATH) or "bd"
-    try:
-        p = subprocess.run([exe, "-C", repo, "list", "--status", STATUSES,
-                            "--json", "--no-pager", "--limit", "0"],
-                           capture_output=True, text=True, timeout=timeout,
-                           env=dict(os.environ, PATH=PATH))
-    except subprocess.TimeoutExpired:
-        return None, f"timed out after {timeout}s"
-    except FileNotFoundError:
-        return None, "bd not found on PATH"
-    except OSError as e:
-        return None, str(e)
-    # bd prefixes its payload with git-config warnings, the same way gt does — take
-    # the first line that opens a JSON body rather than the first bracket anywhere,
-    # since a warning is free to contain one.
-    lines = (p.stdout or "").splitlines()
-    start = next((i for i, l in enumerate(lines) if l.lstrip()[:1] in ("[", "{")), None)
-    if start is None:
-        return None, ((p.stderr or "").strip().splitlines() or ["no output"])[0]
-    try:
-        parsed = json.loads("\n".join(lines[start:]))
-    except json.JSONDecodeError:
-        return None, "unparseable output"
-    return (parsed if isinstance(parsed, list) else []), None
-
-
-def _repos(status, town):
-    """[(label, path)] for every beads repo in town — the town's own, then one per
-    rig. `gt` reports no path for a rig; the directory is <town>/<rig name>, so each
-    one is checked for a .beads before it is asked. The label matches the source
-    names `gt ready --json` uses, so the two lists group and filter alike."""
-    rigs = (status or {}).get("rigs") if isinstance(status, dict) else None
-    names = [r.get("name") for r in (rigs or []) if isinstance(r, dict) and r.get("name")]
-    out, seen = [], set()
-    for label, path in [("town", town), *((n, os.path.join(town, n)) for n in names)]:
-        full = os.path.abspath(os.path.expanduser(path))
-        if full in seen or not os.path.isdir(os.path.join(full, ".beads")):
-            continue
-        seen.add(full)
-        out.append((label, full))
-    return out
 
 
 def _project(bead, rig):
@@ -110,8 +62,8 @@ def in_flight(status, town):
     `READS` source returns. A rig whose beads repo cannot be read costs that rig, not
     the panel: its failure is reported alongside whatever the others returned."""
     items, failed = [], []
-    for label, repo in _repos(status, town):
-        rows, err = _bd(repo)
+    for label, repo in beads.repos(status, town):
+        rows, err = beads.run_bd(repo, ["list", "--status", STATUSES, "--limit", "0"])
         if err:
             failed.append(f"{label}: {err}")
             continue

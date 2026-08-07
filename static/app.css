@@ -202,20 +202,24 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 .badge.warn { background: color-mix(in srgb, var(--yellow) 14%, transparent); border-color: color-mix(in srgb, var(--yellow) 40%, transparent); color: var(--yellow); }
 .badge.epic { background: color-mix(in srgb, var(--purple) 14%, transparent); border-color: color-mix(in srgb, var(--purple) 40%, transparent); color: var(--purple); }
 
-/* ---------- expandable rows (agents, convoys) ---------- */
-.agent, .convoy {
+/* ---------- expandable rows (agents, convoys, beads) ---------- */
+.agent, .convoy, .bead {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius-sm); box-shadow: var(--shadow); overflow: hidden;
 }
-.agent:hover, .convoy:hover { border-color: var(--faint); }
-.agent-row, .convoy-row {
+.agent:hover, .convoy:hover, .bead:hover { border-color: var(--faint); }
+.agent-row, .convoy-row, .bead-row {
   width: 100%; min-height: 52px; text-align: left; cursor: pointer;
   background: none; border: 0; border-radius: 0;
 }
-.agent-row:focus-visible, .convoy-row:focus-visible { outline: 2px solid var(--blue); outline-offset: -3px; }
+.agent-row:focus-visible, .convoy-row:focus-visible,
+.bead-row:focus-visible { outline: 2px solid var(--blue); outline-offset: -3px; }
 /* spans, not divs, so the markup stays valid inside a <button> */
 .agent-row .row-main, .agent-row .title,
-.convoy-row .row-main, .convoy-row .title { display: block; }
+.convoy-row .row-main, .convoy-row .title,
+.bead-row .row-main, .bead-row .title { display: block; }
+/* A bead with nothing under the fold is drawn as a row rather than a dead button. */
+.bead-row.is-flat { display: flex; cursor: default; }
 
 /* The working agent is the answer this tab exists to give: tinted, edged in blue,
    with a live dot. It has to survive a five-row scan on a phone. */
@@ -252,7 +256,8 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 
 .chev { color: var(--faint); transition: transform .15s; }
 .agent-row[aria-expanded="true"] .chev,
-.convoy-row[aria-expanded="true"] .chev { transform: rotate(90deg); }
+.convoy-row[aria-expanded="true"] .chev,
+.bead-row[aria-expanded="true"] .chev { transform: rotate(90deg); }
 
 .agent-detail {
   padding: 11px 13px; background: var(--surface-2); border-top: 1px solid var(--border-soft);
@@ -334,6 +339,49 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 .convoy .bar-track { display: block; margin-top: 9px; }
 .convoy-detail { padding: 2px 6px 6px; background: var(--surface-2); border-top: 1px solid var(--border-soft); }
 .convoy-item + .convoy-item { border-top: 1px solid var(--border-soft); }
+
+/* ---------- backlog ---------- */
+/* An epic's progress across its children, the same bar the convoy rows use — it is the
+   same fact (how much of this batch is left) about a different unit of work. */
+.bead .bar-track { display: block; margin-top: 9px; }
+.bead-detail { padding: 2px 6px 6px; background: var(--surface-2); border-top: 1px solid var(--border-soft); }
+.bead-child + .bead-child { border-top: 1px solid var(--border-soft); }
+
+/* Agent-authored prose — an epic's description, or why something closed. It arrives
+   with its own line breaks and is clipped by the server (backlog.CLIP), so preserve
+   the breaks, wrap the long lines, and cap the height rather than let one bead push
+   the next four off the screen. */
+.bead-text {
+  margin: 8px 6px; padding: 9px 11px; max-height: 240px; overflow-y: auto;
+  background: var(--surface-3); border: 1px solid var(--border-soft); border-radius: var(--radius-sm);
+  font-size: 12.5px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.bead-text-label {
+  display: block; margin-bottom: 5px; font-size: 11px; font-weight: 650;
+  text-transform: uppercase; letter-spacing: .06em; color: var(--faint);
+}
+.bead-trunc { padding: 4px 8px 8px; font-size: 11.5px; color: var(--faint); }
+
+/* What this bead is waiting on — the second half of "blocked", and the reason the
+   section exists. Red, on the row, and truncated because it names other beads' titles. */
+.bead-blocked-line {
+  display: block; margin-top: 4px; font-size: 12px; color: var(--red);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bead-blocked { color: var(--red); }
+/* Why it closed, one line of it, on the row — the rest is under the fold. */
+.bead-reason {
+  display: block; margin-top: 4px; font-size: 12px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* The distribution bars carry a word, not a P-badge, so the first column is wider than
+   the priority histogram's and the label is plain text. */
+.bar.wide { grid-template-columns: minmax(0, 88px) 1fr 34px; }
+.bar-label {
+  font-size: 12px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* Section headings on the Work tab — a level above the .group-head rows inside each
    one, which label states and sources rather than sections. */
@@ -455,8 +503,12 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
   .scroll-y { max-height: 260px; }
   /* The whole row is the expand affordance — keep it a comfortable thumb target,
      and let the badges wrap instead of squeezing the name off the row. */
-  .agent-row { min-height: 56px; }
-  .agent-row .row-side { flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+  .agent-row, .bead-row { min-height: 56px; }
+  .agent-row .row-side,
+  .bead-row .row-side { flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+  /* Three bead sections stacked on a phone; the prose gets less of the viewport so the
+     row you expanded and the one after it are both still on screen. */
+  .bead-text { max-height: 180px; }
   .agent-detail { grid-template-columns: repeat(auto-fit, minmax(136px, 1fr)); gap: 9px 14px; }
   /* Watching is the reason the console is on a phone at all — a tmux attach never
      will be — so the terminal button gets a full thumb target and the screen gets

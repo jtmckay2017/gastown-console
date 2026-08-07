@@ -2,6 +2,7 @@
 without a live Gas Town workspace."""
 
 import time
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 
@@ -54,6 +55,48 @@ def _flight(id_, title, priority, status, assignee, rig, type_="task", **ago):
     return {"id": id_, "title": title, "priority": priority, "issue_type": type_,
             "status": status, "assignee": assignee, "rig": rig, "parent": None,
             "created_at": _ago(days=2), "updated_at": _ago(**ago)}
+
+
+def _bead(id_, title, type_, priority, status="open", parent=None, assignee="",
+          reason="", desc="", blocked_by=(), more=False, **ago):
+    """One entry of the `backlog` read, shaped exactly as backlog._project() returns it
+    — already trimmed, empty fields absent rather than null, and prose (`desc`,
+    `close_reason`) only where prose is the answer."""
+    at = _ago(**(ago or {"hours": 5}))
+    out = {"id": id_, "title": title, "issue_type": type_, "priority": priority,
+           "status": status, "created_at": _ago(days=9), "updated_at": at}
+    if status == "closed":
+        out["closed_at"] = at
+    for key, value in (("parent", parent), ("assignee", assignee),
+                       ("close_reason", reason), ("desc", desc),
+                       ("blocked_by", list(blocked_by))):
+        if value:
+            out[key] = value
+    if more:
+        out["more"] = True          # the server clipped it at backlog.CLIP
+    return out
+
+
+def _backlog_rig(label, rows, scaffolding=0):
+    """One rig's block of the `backlog` read. The counts are computed off the beads
+    rather than written down, so a fixture can never claim a distribution it does not
+    have; `scaffolding` is the convoy/molecule/rig beads the real read counts in
+    `total` and then declines to draw."""
+    closed = [b for b in rows if b["status"] == "closed"]
+    # `kids`/`kids_closed` are the server's own count over the whole backlog rather than
+    # over what survived its caps (see backlog.py) — here nothing is capped, so counting
+    # the fixture is the same thing, and keeps the two from drifting apart by hand.
+    kids = Counter(b["parent"] for b in rows if b.get("parent"))
+    for b in rows:
+        if kids[b["id"]]:
+            b["kids"] = kids[b["id"]]
+            b["kids_closed"] = sum(1 for k in rows
+                                   if k.get("parent") == b["id"] and k["status"] == "closed")
+    return {"rig": label, "total": len(rows) + scaffolding, "work": len(rows),
+            "status": dict(Counter(b["status"] for b in rows)),
+            "type": dict(Counter(b["issue_type"] for b in rows)),
+            "open_total": len(rows) - len(closed), "closed_total": len(closed),
+            "beads": rows}
 
 
 def _tracked(id_, title, status, assignee=""):
@@ -257,6 +300,94 @@ def fixtures():
               if a["role"] in by_role}
     models.pop("web_platform/Slit", None)
 
+    # The `backlog` read: the whole planned shape, per rig, as backlog.by_rig() returns
+    # it. Four things in here are load-bearing and none of them are decoration:
+    #
+    #   wp-110 and ba-30 are epics with children, so the tree has something to expand
+    #     and the child counts have something to count. wp-110 carries a clipped
+    #     description (more:True) — the only place a contributor sees that case.
+    #   wp-122 is blocked by wp-120, which is hooked, so the Blocked section has a
+    #     genuine unmet blocker to name.
+    #   wp-111 is blocked by wp-98, which is CLOSED — so it must NOT appear as blocked.
+    #     A viewer that reads the edge without reading the blocker's status shows this
+    #     one as stuck forever, which is the bug this fixture exists to catch.
+    #   The in-flight statuses match the `flight` fixture below bead for bead, because
+    #     the tab's In progress section is that read, not a second copy of it.
+    wp_epic = (
+        "Six button variants exist across the app, and two of them differ only in a\n"
+        "border radius nobody chose deliberately. Every new screen picks one at random,\n"
+        "so the difference is load-bearing in a handful of places and cosmetic in the\n"
+        "rest — which is why this cannot be a find-and-replace.\n\n"
+        "The work is to land two variants, primary and quiet, behind shared tokens, and\n"
+        "then migrate call sites screen by screen rather than in one sweep, so any\n"
+        "regression is always traceable to a single…")
+    backlog = {"rigs": [
+        _backlog_rig("town", [
+            _bead("hq-51c", "Draft the cross-rig freeze plan for the release", "feature",
+                  1, "in_progress", assignee="mayor/", minutes=3),
+            _bead("hq-e2u", "Patrol wisps invisible to hook reporting", "bug", 1, hours=1),
+            _bead("hq-48m", "Adopting an existing repo skips provisioning", "bug", 2, hours=6),
+            _bead("hq-33p", "Escalations were mailed twice on every retry", "bug", 1,
+                  "closed", reason="Fixed in gt 0.9.4 — the retry loop was re-sending "
+                  "the notification instead of the escalation.", days=2),
+        ], scaffolding=2),
+        _backlog_rig("web_platform", [
+            _bead("wp-110", "Design system: consolidate 6 button variants into 2", "epic",
+                  2, desc=wp_epic, more=True, hours=9),
+            _bead("wp-120", "Rotate the session cookie on privilege change", "bug", 1,
+                  "hooked", parent="wp-110", assignee="web_platform/polecats/Toast",
+                  minutes=6),
+            _bead("wp-121", "Consolidate the button variants behind shared tokens", "task",
+                  2, "hooked", parent="wp-110", assignee="web_platform/Slit", minutes=52),
+            _bead("wp-122", "Checkout retry needs the new idempotency key", "task", 2,
+                  "blocked", parent="wp-110", blocked_by=["wp-120"], hours=4),
+            _bead("wp-111", "Replace hand-rolled date parsing with the shared helper",
+                  "task", 3, parent="wp-110", blocked_by=["wp-98"], hours=20),
+            _bead("wp-101", "Session cookie is not rotated after privilege change", "bug",
+                  1, hours=2),
+            _bead("wp-104", "Checkout flow loses cart on slow networks", "bug", 1, hours=4),
+            _bead("wp-98", "Cache the pricing table per request", "task", 2, "closed",
+                  parent="wp-110", reason="Merged in #479.", hours=3),
+            _bead("wp-90", "Drop the second copy of the date formatter", "chore", 3,
+                  "closed", reason="Closed without a change: the second copy is the one\n"
+                  "every screen imports, and the 'original' has no call sites left.\n"
+                  "Deleting the original instead — filed as wp-111.", days=3),
+        ], scaffolding=1),
+        _backlog_rig("billing_api", [
+            _bead("ba-30", "Ledger correctness for split refunds", "epic", 1,
+                  desc="Three separate reports of totals drifting by a cent, all of them "
+                  "on refunds split across two payment methods. Treat the rounding rule "
+                  "as the deliverable, not each symptom.", hours=1),
+            _bead("ba-40", "Reconcile split-refund rounding against the ledger", "bug", 0,
+                  "in_progress", parent="ba-30", assignee="billing_api/Toast", minutes=22),
+            _bead("ba-31", "Invoice totals drift by a cent on split refunds", "bug", 0,
+                  parent="ba-30", blocked_by=["ba-40"], hours=1),
+            _bead("ba-34", "Retry webhook deliveries with exponential backoff", "feature",
+                  2, hours=12),
+            _bead("ba-38", "Drop the legacy /v1 pricing endpoint", "chore", 3, hours=30),
+            _bead("ba-29", "Backfill missing customer tax ids", "chore", 2, "closed",
+                  parent="ba-30", reason="Merged in #477.", hours=7),
+        ]),
+        # A parked rig still has a backlog, and a ceremony is exactly when somebody
+        # wants to look at it.
+        _backlog_rig("mobile_app", [
+            _bead("ma-12", "Cold start regressed to 2.4s on mid-tier Android", "bug", 1,
+                  hours=5),
+            _bead("ma-15", "Offline queue replays out of order", "bug", 2,
+                  blocked_by=["ma-12"], hours=26),
+            # Marked blocked by hand, with no edge to say by what. A common shape and
+            # the one a viewer that only reads edges misses entirely.
+            _bead("ma-18", "Push tokens are not re-registered after a restore", "bug", 2,
+                  "blocked", hours=30),
+            _bead("ma-9", "Fix crash on empty push payload", "bug", 1, "closed",
+                  reason="Merged in #471.", days=1),
+            # Closed with no reason recorded — most beads are. It has nothing under the
+            # fold, so it must draw as a row rather than as a button onto an empty box.
+            _bead("ma-4", "Bump the crash reporter past the 3.x deprecations", "chore", 3,
+                  "closed", days=4),
+        ]),
+    ]}
+
     return {
         "status": status,
         "rigs": rigs,
@@ -265,6 +396,7 @@ def fixtures():
         "models": models,
         "panes": panes,
         "watch": watch,
+        "backlog": backlog,
         # Every list below arrives deliberately out of order — the console sorts each one
         # newest-first itself (gc-feh), and a pre-sorted fixture would hide a regression.
         "mail": [

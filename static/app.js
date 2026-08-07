@@ -70,6 +70,10 @@ const state = {
   expanded: new Set(),
   // Same, for the convoy rows on the Work tab, keyed by convoy id.
   convoys: new Set(),
+  // The Backlog tab: its own filter pair (the Work tab's chips mean something else
+  // there), and its own expansion set, keyed by bead id. One set across all four of
+  // its sections — a bead expanded as an epic is the same bead expanded as a closure.
+  bq: "", brig: "all", beads: new Set(),
   // The tmux session whose terminal is open in the watch view, and the last `watch`
   // panel fetched for it. One at a time: watching is an act of attention, and two
   // live terminals on one screen is two things nobody is reading. See watchView().
@@ -158,6 +162,7 @@ function render() {
   renderPriority();
   renderChangelog();
   renderWorkView();
+  renderBacklog();
   renderAgents(status);
   renderMail();
   renderTrail();
@@ -274,6 +279,10 @@ function renderKpis(s) {
     </div>`).join("");
   const pw = $("#pill-work"), pa = $("#pill-agents"), pm = $("#pill-mail");
   pw.textContent = num(ready.summary?.total);
+  // The whole town's open backlog, not the tab's current rig selection — a pill that
+  // moved when you filtered would be reporting the filter, not the backlog.
+  $("#pill-backlog").textContent = ((dataOf("backlog", {}) || {}).rigs || [])
+    .reduce((n, r) => n + num((r.status || {}).open), 0);
   pa.textContent = agents.length;
   pm.textContent = unread || mail.length;
   pm.classList.toggle("hot", unread > 0);
@@ -662,6 +671,375 @@ function renderReady() {
     : errNote("ready") + (html || empty(state.q || state.prio !== "all" || state.source !== "all"
       ? "Nothing matches that filter" : "No ready work"));
 }
+
+/* ---------------- backlog ----------------
+   The Work tab answers "what is happening"; this one answers "what did we plan", and
+   they are not the same question asked at different volumes. Everything a ceremony
+   reads is structurally absent from the reads the Work tab is built on: `gt ready` is
+   unblocked-and-open, so epics with blocked children, everything already picked up and
+   all 74 closed beads are excluded by definition rather than by omission.
+
+   So this tab is built on the one read that keeps the structure (see backlog.py), and
+   it is laid out as the four questions a ceremony actually asks, in the order it asks
+   them:
+
+     Epics       what is the plan, and what sits under each part of it
+     Blocked     what is stuck, and behind WHAT — the blocks edges, drawn nowhere until now
+     In progress what is moving right now, and who has it
+     Closed      what finished, and why — close_reason, fetched nowhere until now
+
+   The third of those is the `flight` read the Work tab draws (gc-8ho), filtered to
+   this tab's rig and rendered by the same flightRow(). It is deliberately not a second
+   in-progress read: two answers to "who has what" that could disagree is worse than
+   one answer in two places.
+
+   Everything on this tab is agent-authored and untrusted — bead titles, descriptions,
+   close reasons and assignee strings alike — so every interpolation goes through
+   esc(), and the two prose fields are pre-wrapped rather than parsed. */
+
+const CLOSED_DATE = ["closed_at", "updated_at", "created_at"];
+const BEAD_DATE = ["updated_at", "created_at"];
+const isClosed = (b) => String(b.status || "").toLowerCase() === "closed";
+
+/** The selected slice of the backlog read, plus the two indexes every section below
+    needs: id -> bead, and parent id -> its children. Built once per render so no two
+    sections can disagree about the shape of the tree. */
+function backlogModel() {
+  const rigs = ((dataOf("backlog", {}) || {}).rigs) || [];
+  const sel = rigs.filter((r) => state.brig === "all" || r.rig === state.brig);
+  const items = sel.flatMap((r) => (r.beads || []).map((b) => ({ ...b, rig: r.rig })));
+  const byId = new Map(items.map((b) => [b.id, b]));
+  // The children actually carried, which is not the same as the children that exist —
+  // see `kids` on a parent bead for the true count (backlog.py). This map is what the
+  // expansion can draw; that number is what the row is allowed to claim.
+  const children = new Map();
+  for (const b of items) {
+    if (!b.parent) continue;
+    if (!children.has(b.parent)) children.set(b.parent, []);
+    children.get(b.parent).push(b);
+  }
+  return { rigs, sel, items, byId, children };
+}
+
+/** What a bead is waiting on, resolved against the same view. backlog.py pulls every
+    blocker into the payload even when a cap would have dropped it, so an id that does
+    not resolve here is a genuinely foreign bead — say so rather than drawing a bare
+    id and letting the reader assume it is a bug. */
+const blockersOf = (m, b) => (b.blocked_by || [])
+  .map((id) => m.byId.get(id) || { id, title: "(not in this rig's backlog)", status: "" });
+
+/** Blocked means blocked *now*. An edge to a bead that has already closed is history,
+    and counting it leaves work looking stuck forever — the fixture has one of each for
+    exactly that reason. `bd`'s stored `blocked` status counts too: it is set by hand
+    and carries no edge, so a viewer that only read edges would miss it. */
+const unmetOf = (m, b) => blockersOf(m, b).filter((x) => !isClosed(x));
+const isBlocked = (m, b) => !isClosed(b)
+  && (String(b.status || "").toLowerCase() === "blocked" || unmetOf(m, b).length > 0);
+
+const IN_FLIGHT = new Set(["in_progress", "hooked"]);
+const beadDot = (m, b) => (isClosed(b) ? "done" : isBlocked(m, b) ? "off"
+  : IN_FLIGHT.has(String(b.status || "").toLowerCase()) ? "busy" : "");
+
+const beadMatches = (b) => !state.bq
+  || `${b.id} ${b.title} ${b.assignee || ""} ${b.issue_type || ""} ${b.rig || ""}`
+    .toLowerCase().includes(state.bq);
+
+const beadDetailId = (id) => `bead-detail-${String(id).replace(/[^a-zA-Z0-9]+/g, "-")}`;
+const TRUNC = '<div class="bead-trunc">The server clipped this text — run '
+  + '<code class="mono">bd show</code> on the id above for the whole thing.</div>';
+
+/** Agent-authored prose: a description, or the reason something closed. It arrives
+    with its own line breaks, so it is pre-wrapped rather than collapsed, and it is
+    escaped here like every other value that came out of a bead. */
+const beadText = (label, text) => (text ? `<div class="bead-text">
+  <span class="bead-text-label">${esc(label)}</span>${esc(text)}</div>` : "");
+
+/** One bead, as every section on this tab draws it — the sections differ only in what
+    they put under the fold, because they are one object seen from four angles. A row
+    with nothing under the fold is not a button at all: an expander that opens onto an
+    empty box is worse than no expander. */
+function beadRow(m, b, note, detail) {
+  const st = String(b.status || "").toLowerCase();
+  const open = state.beads.has(b.id);
+  const body = `
+    <i class="dot ${beadDot(m, b)}"></i>
+    <span class="row-main">
+      <span class="title wrap">${esc(b.title)}</span>
+      <span class="sub">
+        <span class="mono">${esc(b.id)}</span>
+        <span>${esc(b.rig || "")}</span>
+        ${b.assignee ? `<span>${esc(b.assignee)}</span>` : ""}
+        <span>${esc(ago(pick(b, isClosed(b) ? CLOSED_DATE : BEAD_DATE)))}</span>
+      </span>
+      ${note || ""}
+    </span>
+    <span class="row-side">
+      ${b.issue_type && b.issue_type !== "task"
+    ? `<span class="badge ${b.issue_type === "epic" ? "epic" : ""}">${esc(b.issue_type)}</span>` : ""}
+      ${b.priority == null ? "" : `<span class="badge p${esc(b.priority)}">P${esc(b.priority)}</span>`}
+      <span class="badge ${st === "closed" ? "ok" : st === "blocked" ? "bad" : ""}">${esc(st || "?")}</span>
+      ${detail ? '<svg viewBox="0 0 24 24" class="ico chev" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>' : ""}
+    </span>`;
+  if (!detail) return `<div class="bead"><span class="row bead-row is-flat">${body}</span></div>`;
+  return `
+    <div class="bead">
+      <button type="button" class="row bead-row" data-bead="${esc(b.id)}"
+              aria-expanded="${open}" aria-controls="${esc(beadDetailId(b.id))}">${body}</button>
+      ${open ? `<div class="bead-detail" id="${esc(beadDetailId(b.id))}">${detail}</div>` : ""}
+    </div>`;
+}
+
+/** A bead inside somebody else's expansion — a child of an epic, or a blocker. Flat
+    and never itself expandable: one level of nesting is a tree, two is a maze. */
+function beadLine(m, b) {
+  const unmet = unmetOf(m, b);
+  return `
+    <div class="row bead-child">
+      <i class="dot ${beadDot(m, b)}"></i>
+      <div class="row-main">
+        <div class="title wrap">${esc(b.title)}</div>
+        <div class="sub">
+          <span class="mono">${esc(b.id)}</span>
+          ${b.assignee ? `<span>${esc(b.assignee)}</span>` : ""}
+          ${b.updated_at || b.closed_at
+    ? `<span>${esc(ago(pick(b, isClosed(b) ? CLOSED_DATE : BEAD_DATE)))}</span>` : ""}
+          ${unmet.length ? `<span class="bead-blocked">blocked by ${esc(unmet.map((x) => x.id).join(", "))}</span>` : ""}
+        </div>
+      </div>
+      <div class="row-side">
+        ${b.priority == null ? "" : `<span class="badge p${esc(b.priority)}">P${esc(b.priority)}</span>`}
+        <span class="badge ${isClosed(b) ? "ok" : String(b.status || "").toLowerCase() === "blocked" ? "bad" : ""}">${esc(b.status || "unknown")}</span>
+      </div>
+    </div>`;
+}
+
+/* ---- the four sections ---- */
+
+/** Anything with children, whatever `bd` calls its type — a plan is made of the edges,
+    not of the word "epic", and this town has parents typed feature and decision. */
+function renderEpics(m) {
+  // `kids` is the server's count over the whole backlog; m.children is what was carried
+  // past the caps. The row states the first and draws the second, and says so when they
+  // differ — an epic that quietly reported 15 of its 19 children would be wrong in
+  // exactly the place a planning session is trusting it.
+  const all = m.items.filter((b) => num(b.kids));
+  // An epic matches if it matches or any of its children does. Filtering a tree on the
+  // parent alone hides the row somebody was searching for inside a collapsed one.
+  const hits = all.filter((b) => beadMatches(b) || (m.children.get(b.id) || []).some(beadMatches));
+  // Open first, closed after — a finished epic is history, not plan. byNewest runs
+  // first and byKey is stable, so newest-first survives inside each group.
+  const items = byKey(byNewest(hits, BEAD_DATE), (b) => (isClosed(b) ? "1" : "0"));
+  $("#epic-count").textContent = !all.length ? ""
+    : items.length === all.length ? `${all.length} with children`
+      : `${items.length} of ${all.length}`;
+  $("#epics").innerHTML = items.length ? items.map((b) => {
+    const total = num(b.kids), done = num(b.kids_closed);
+    const drawn = byKey(byNewest(m.children.get(b.id) || [], BEAD_DATE),
+      (k) => (isClosed(k) ? "1" : "0"));
+    const note = `
+      <span class="sub"><span>${total} child${total === 1 ? "" : "ren"} · ${done} closed</span></span>
+      <span class="bar-track"><span class="bar-fill"
+        style="width:${Math.round((done / total) * 100)}%;background:${done === total ? "var(--green)" : "var(--blue)"}"></span></span>`;
+    const short = drawn.length < total
+      ? `<div class="bead-trunc">${drawn.length} of ${total} children carried — the rest are older closed ones.</div>` : "";
+    const detail = beadText("Description", b.desc)
+      + drawn.map((k) => beadLine(m, k)).join("") + short + (b.more ? TRUNC : "");
+    return beadRow(m, b, note, detail);
+  }).join("") : empty(all.length ? "No epic matches that filter" : "Nothing here has children");
+}
+
+function renderBlocked(m) {
+  const all = m.items.filter((b) => isBlocked(m, b));
+  const items = byNewest(all.filter(beadMatches), BEAD_DATE);
+  $("#blocked-count").textContent = !all.length ? ""
+    : items.length === all.length ? `${all.length} stuck` : `${items.length} of ${all.length}`;
+  $("#blocked").innerHTML = items.length ? items.map((b) => {
+    const unmet = unmetOf(m, b);
+    // The whole point of the section is the second half of the sentence, so it is on
+    // the row rather than under the fold. The fold carries the blockers themselves.
+    const note = `<span class="bead-blocked-line">${unmet.length
+      ? `blocked by ${esc(unmet.map((x) => `${x.id} — ${x.title}`).join(" · "))}`
+      : "marked blocked by hand — no blocking bead recorded"}</span>`;
+    return beadRow(m, b, note, unmet.map((x) => beadLine(m, x)).join(""));
+  }).join("") : empty(all.length ? "Nothing blocked matches that filter" : "Nothing is blocked");
+}
+
+/** The `flight` read the Work tab draws, narrowed to this tab's rig — not a second
+    in-progress read. Two answers to "who has what" that could disagree is strictly
+    worse than one answer shown in two places. */
+function renderBacklogFlight() {
+  if (loadingOf("flight")) return void ($("#backlog-flight").innerHTML = SKEL);
+  const fm = flightModel();
+  const ix = agentIndex(allAgents(dataOf("status", {}) || {}));
+  const ctx = agentCtx();
+  const all = fm.items.filter((b) => state.brig === "all" || b.rig === state.brig);
+  const items = all.filter(beadMatches);
+  $("#progress-count").textContent = !all.length ? ""
+    : items.length === all.length ? `${all.length} in flight` : `${items.length} of ${all.length}`;
+  $("#backlog-flight").innerHTML = errNote("flight") + (items.length
+    ? items.map((b) => flightRow(b, ix, ctx)).join("")
+    : empty(all.length ? "Nothing in flight matches that filter" : "Nothing in flight here"));
+}
+
+// A retro reads the recent end of the history, not all of it. The server already caps
+// what it carries per rig (backlog.MAX_CLOSED); this caps what one screen draws, and
+// the Coverage card above says what both dropped.
+const CLOSED_ROWS = 40;
+
+function renderClosed(m) {
+  const all = byNewest(m.items.filter(isClosed), CLOSED_DATE);
+  const hits = all.filter(beadMatches);
+  const items = hits.slice(0, CLOSED_ROWS);
+  // The rigs' own totals, not this list's — the panel is showing a window onto them.
+  const held = m.sel.reduce((n, r) => n + num(r.closed_total), 0);
+  $("#closed-count").textContent = !held ? ""
+    : `${items.length} of ${hits.length === all.length ? held : hits.length}`;
+  $("#closed").innerHTML = items.length ? items.map((b) => beadRow(
+    m, b,
+    b.close_reason ? `<span class="bead-reason">${esc(b.close_reason)}</span>` : "",
+    beadText("Why it closed", b.close_reason) + (b.close_reason && b.more ? TRUNC : ""),
+  )).join("") : empty(all.length ? "Nothing closed matches that filter" : "Nothing closed yet");
+}
+
+/* ---- the numbers above them ---- */
+
+/* Reading order for the status bars: the pipeline in the shape it actually runs in,
+   rather than whatever order the counts came back in. `hooked` is in here because it
+   is what `gt sling` sets — see flight.py, it is where most live work sits. */
+const STATUS_ORDER = ["open", "hooked", "in_progress", "blocked", "deferred", "closed"];
+// Never data-derived: these land inside a style attribute, so the map is the allowlist.
+const STATUS_COLOR = {
+  open: "var(--blue)", hooked: "var(--green)", in_progress: "var(--green)",
+  blocked: "var(--red)", deferred: "var(--faint)", closed: "var(--faint)",
+};
+const TYPE_COLOR = {
+  bug: "var(--red)", epic: "var(--purple)", feature: "var(--green)",
+  decision: "var(--accent)", task: "var(--blue)",
+};
+
+function sumCounts(rigs, key) {
+  const out = {};
+  for (const r of rigs) {
+    for (const [k, v] of Object.entries(r[key] || {})) out[k] = (out[k] || 0) + num(v);
+  }
+  return out;
+}
+
+function barsHtml(counts, keys, colors) {
+  const max = Math.max(1, ...keys.map((k) => counts[k]));
+  return keys.map((k) => `
+    <div class="bar wide">
+      <span class="bar-label">${esc(k)}</span>
+      <span class="bar-track"><span class="bar-fill"
+        style="width:${(counts[k] / max) * 100}%;background:${colors[k] || "var(--faint)"}"></span></span>
+      <span class="bar-n">${counts[k]}</span>
+    </div>`).join("");
+}
+
+function renderDistribution(m) {
+  const st = sumCounts(m.sel, "status");
+  const ty = sumCounts(m.sel, "type");
+  const stKeys = [...STATUS_ORDER.filter((k) => st[k]),
+    ...Object.keys(st).filter((k) => !STATUS_ORDER.includes(k)).sort()];
+  const tyKeys = Object.keys(ty).sort((a, b) => ty[b] - ty[a] || (a < b ? -1 : 1));
+  $("#backlog-status").innerHTML = stKeys.length
+    ? barsHtml(st, stKeys, STATUS_COLOR) : empty("No beads");
+  $("#backlog-type").innerHTML = tyKeys.length
+    ? barsHtml(ty, tyKeys, TYPE_COLOR) : empty("No beads");
+}
+
+/** What was read against what is drawn. A backlog viewer that silently truncated would
+    be the same failure as reading the wrong database — an answer that looks complete
+    and is not — so the caps are on the page, per rig, whether or not they bit. */
+function renderCoverage(m) {
+  const shown = m.sel.reduce((n, r) => n + (r.beads || []).length, 0);
+  const work = m.sel.reduce((n, r) => n + num(r.work), 0);
+  $("#backlog-coverage").textContent = work ? `${shown} of ${work} carried` : "";
+  $("#backlog-rigs").innerHTML = errNote("backlog") + (m.rigs.length ? m.rigs.map((r) => `
+    <div class="row">
+      <div class="row-main">
+        <div class="title">${esc(r.rig)}</div>
+        <div class="sub">
+          <span>${num(r.total)} in the database</span>
+          <span>${num(r.work)} work${num(r.total) - num(r.work)
+    ? ` · ${num(r.total) - num(r.work)} scaffolding` : ""}</span>
+          <span>${num(r.open_total)} not closed · ${num(r.closed_total)} closed</span>
+          <span>${(r.beads || []).length} carried to this page</span>
+        </div>
+      </div>
+    </div>`).join("") : empty("No beads repo answered"));
+}
+
+function renderBacklog() {
+  if (loadingOf("backlog")) {
+    ["#epics", "#blocked", "#closed", "#backlog-rigs"].forEach((s) => ($(s).innerHTML = SKEL));
+    return;
+  }
+  const rigs = ((dataOf("backlog", {}) || {}).rigs) || [];
+  // The selected rig can vanish under the tab — unregistered, parked out of the status
+  // read, or a repo that stopped answering. Fall back rather than draw an empty page.
+  if (state.brig !== "all" && !rigs.some((r) => r.rig === state.brig)) state.brig = "all";
+  const m = backlogModel();
+  // The 8s auto-refresh rebuilds these subtrees; expansion lives in state.beads so it
+  // survives, and the focused row is restored so keyboard focus does not jump to <body>.
+  const focused = document.activeElement?.dataset?.bead;
+  renderBacklogChips(m);
+  renderBacklogKpis(m);
+  renderDistribution(m);
+  renderCoverage(m);
+  renderEpics(m);
+  renderBlocked(m);
+  renderBacklogFlight();
+  renderClosed(m);
+  if (focused) $$("#view-backlog [data-bead]").find((el) => el.dataset.bead === focused)?.focus();
+}
+
+function renderBacklogChips(m) {
+  const names = byKey(m.rigs.map((r) => r.rig), (n) => (n === "town" ? "0" : "1" + n));
+  $("#backlog-chips").innerHTML = [["all", "All rigs"], ...names.map((n) => [n, n])]
+    .map(([k, label]) => `<button class="chip ${state.brig === k ? "is-active" : ""}"
+      data-brig="${esc(k)}">${esc(label)}</button>`).join("");
+  $$("#backlog-chips [data-brig]").forEach((b) =>
+    (b.onclick = () => { state.brig = b.dataset.brig; renderBacklog(); }));
+}
+
+function renderBacklogKpis(m) {
+  const st = sumCounts(m.sel, "status");
+  const total = m.sel.reduce((n, r) => n + num(r.total), 0);
+  const work = m.sel.reduce((n, r) => n + num(r.work), 0);
+  const closed = m.sel.reduce((n, r) => n + num(r.closed_total), 0);
+  // Neither open nor closed, counted off the rig's own totals rather than off the
+  // capped list, so it agrees with the bars beside it.
+  const moving = Object.entries(st)
+    .filter(([k]) => k !== "open" && k !== "closed").reduce((n, [, v]) => n + v, 0);
+  const blocked = m.items.filter((b) => isBlocked(m, b)).length;
+  const epics = m.items.filter((b) => !isClosed(b) && num(b.kids)).length;
+  const cards = [
+    { v: total, l: "Beads", sub: `${work} work${total - work ? ` · ${total - work} scaffolding` : ""}` },
+    { v: num(st.open), l: "Open", sub: "filed, not started" },
+    { v: moving, l: "Not open, not closed", cls: moving ? "good" : "", sub: "hooked, in progress or blocked" },
+    { v: blocked, l: "Blocked", cls: blocked ? "alert" : "", sub: blocked ? "waiting on another bead" : "nothing is stuck" },
+    { v: epics, l: "Open epics", sub: "parents with children" },
+    { v: closed, l: "Closed", sub: "the history below" },
+  ];
+  $("#backlog-kpis").innerHTML = cards.map((c) => `
+    <div class="kpi ${c.cls || ""}">
+      <div class="kpi-value">${esc(c.v)}</div>
+      <div class="kpi-label">${esc(c.l)}</div>
+      <div class="kpi-sub muted">${esc(c.sub || "")}</div>
+    </div>`).join("");
+}
+
+$("#backlog-q").oninput = (e) => { state.bq = e.target.value.toLowerCase(); renderBacklog(); };
+
+// One delegated listener; every section under #view-backlog is replaced wholesale on
+// each render, so per-row handlers would not survive.
+$("#view-backlog").addEventListener("click", (ev) => {
+  const row = ev.target.closest("[data-bead]");
+  if (!row) return;
+  if (!state.beads.delete(row.dataset.bead)) state.beads.add(row.dataset.bead);
+  renderBacklog();
+});
 
 /* ---------------- agents ----------------
    This tab exists to answer one question — which agent is working right now — so
@@ -1145,7 +1523,8 @@ function renderTrail() {
 
 /* ---------------- boot ---------------- */
 ["#rigs", "#escalations", "#prio", "#changelog", "#flight", "#convoys", "#work", "#agents",
-  "#mail", "#trail"]
+  "#mail", "#trail", "#epics", "#blocked", "#backlog-flight", "#closed", "#backlog-rigs",
+  "#backlog-status", "#backlog-type"]
   .forEach((s) => ($(s).innerHTML = '<div class="skeleton"></div><div class="skeleton"></div>'));
 load(true);
 schedule();

@@ -24,8 +24,9 @@ not a module; `static/app.css` is hand-written CSS with custom properties.
   cadence into `_cache`. Cadences live in the `READS` table — that table is the single place a
   read is declared: name → (source, refresh interval). A source is normally `gt` argv; it may
   also be a callable returning `(data, error)`, for a read that is not a `gt` call at all (the
-  `models` panel, see `models.py`; the `panes` panel, see `panes.py`; the `flight` panel,
-  see `flight.py`). Adding a read means adding a row here, nowhere else.
+  `models` panel, see `models.py`; the `panes` panel, see `panes.py`; the `flight` and
+  `backlog` panels, see `flight.py` and `backlog.py`). Adding a read means adding a row here,
+  nowhere else — a read that does not fit the `gt`-argv shape is a callable, not a second table.
 - HTTP handlers **only read `_cache`**. `GET /api/snapshot` returns every panel plus its age;
   `GET /api/panel/<name>` returns one panel in the same shape — the UI uses `/api/snapshot`,
   `POST /api/mail`, and `/api/panel/watch` for the live terminal view, which wants a faster
@@ -51,12 +52,24 @@ same scheduler for the same reason. `panes` costs one `capture-pane` per session
 `flight` one `bd list` per beads repo, which is milliseconds each and still has no business on
 a request path. `watch` costs one `capture-pane` for each session under lease — never more
 than `panes.MAX_WATCHED`, and none at all when nobody is watching, which is nearly always.
+`backlog` is the heaviest of the lot — a whole `bd list --all` per beads repo — which is why
+it runs on the slowest cadence in the table and trims hard before it caches.
 
 There are now **no exceptions**: `refresh()` is called only from the scheduler pool, and it
 returns immediately under `--demo` so no read path can shell out — or touch a real transcript,
 or a real tmux socket, or a real beads repo — with fixtures loaded. Every place that spawns a
-subprocess (`refresh()`, `send_mail()`, and `panes.py`/`flight.py` beneath `refresh()`) is
+subprocess (`refresh()`, `send_mail()`, and `panes.py`/`beads.py` beneath `refresh()`) is
 demo-guarded. Keep it that way.
+
+## Bead reads run in the rig's directory — always
+
+Every rig keeps its **own** Dolt database, and `bd` chooses one from the directory it runs in.
+`bd list` run from the town root therefore returns an **empty list** for a rig's beads, with no
+error and no warning — which is indistinguishable from an empty backlog and has already cost
+this town once (hq-rin). So all three bead reads go through `beads.py`, which passes `-C repo`
+*and* `cwd=repo` and owns the only definition of where a rig's beads live. Do not assemble a
+`bd` argv anywhere else, and treat a repo that answers with nothing as suspicious rather than
+as empty — `backlog.py` reports it as an error instead of drawing a rig that planned nothing.
 
 ## Security posture
 
@@ -100,7 +113,9 @@ Other things not to erode:
 | `demo.py` | Synthetic fixtures for `--demo`. |
 | `models.py` | The `models` read: which model each agent runs, from its Claude Code transcript. |
 | `panes.py` | Two reads off the same tmux screens. `panes`: what each agent is *doing*, one summary line per session — `gt`'s `state` field means "has a bead on its hook", not "is working", so this is the console's only source of activity. `watch`: one agent's *whole* screen, for the live terminal view, and only while somebody has that view open. |
-| `flight.py` | The `flight` read: every bead that is neither open nor closed, and who holds it. `gt ready` drops a bead the moment it is picked up and no `gt` read carries an agent's work, so this is the only answer to "what is being worked on". Shells out to `bd`, once per beads repo in town. |
+| `beads.py` | The one way to run `bd`. Owns repo discovery and the invocation, because a bead read against the wrong directory answers "nothing" instead of failing — see the section above. |
+| `flight.py` | The `flight` read: every bead that is neither open nor closed, and who holds it. `gt ready` drops a bead the moment it is picked up and no `gt` read carries an agent's work, so this is the only answer to "what is being worked on". One `bd list` per beads repo in town. |
+| `backlog.py` | The `backlog` read: each rig's whole backlog with its structure intact — the epic hierarchy, the `blocks` edges, and why every closed bead closed. The Work tab's reads are all about this minute; this is the one a ceremony reads. Slowest cadence, biggest payload, trimmed hardest. |
 | `static/index.html` | The whole page skeleton; every panel is an empty `<div id=…>`. |
 | `static/app.js` | Fetch, state, and all rendering. Vanilla JS, no framework. |
 | `static/app.css` | Themes via `:root` custom properties + `:root[data-theme="light"]`. |
