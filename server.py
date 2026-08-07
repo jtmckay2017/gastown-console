@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 import models
+import panes
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 ENV = dict(os.environ, PATH="/opt/homebrew/bin:/usr/local/bin:" + os.environ.get("PATH", ""))
@@ -28,13 +29,25 @@ TOKEN = None
 DEMO = False
 
 
+def _status():
+    """The last status payload, for the two reads that decorate it. Both run on the
+    scheduler and status is refreshed faster than either, so it is warm by then."""
+    with _guard:
+        return _cache["status"]["data"]
+
+
 def agent_models():
     """The "models" read: which model each agent runs, out of its Claude Code
     transcript because `gt` exposes none. See models.py — it derives from the status
     panel, which the scheduler keeps warmer than this one on its own cadence."""
-    with _guard:
-        status = _cache["status"]["data"]
-    return models.by_agent(status, TOWN)
+    return models.by_agent(_status(), TOWN)
+
+
+def agent_panes():
+    """The "panes" read: what each agent is actually doing, from its tmux screen.
+    `gt` has no liveness field at all — its `state` means "has a bead on its hook" —
+    so this is the console's only source of activity. See panes.py."""
+    return panes.by_session(_status())
 
 
 # name -> (source, seconds between background refreshes). A source is `gt` argv —
@@ -49,9 +62,17 @@ READS = {
     "trail":       (["trail", "--limit", "40", "--json"], 20),
     "changelog":   (["changelog", "--json"], 90),
     "convoys":     (["convoy", "list", "--json"], 60),
+    # `gt status` omits the deacon's dog pack entirely, so the Agents tab would show
+    # a working dog nowhere at all without this. Slow: the pack changes rarely, and
+    # what a dog is *doing* comes from "panes" below, not from here.
+    "dogs":        (["dog", "list", "--json"], 45),
     # Slower than the panels it decorates: a session's model never changes under it,
     # and models.py re-reads a transcript only once it has actually grown.
     "models":      (agent_models, 60),
+    # Faster than everything else, because this is the one read that answers "who is
+    # working right now" and a stale answer to that is the bug it exists to fix. It
+    # is also the cheapest — a capture-pane per session, no Dolt, no `gt`.
+    "panes":       (agent_panes, 6),
 }
 
 # Concurrent `gt` calls contend on the Dolt server, so keep the fan-out small.

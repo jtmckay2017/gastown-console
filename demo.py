@@ -19,6 +19,12 @@ def _agent(name, address, role, session, running=True, state="idle", work=False,
             "agent_alias": "claude", "agent_info": "claude"}
 
 
+def _pane(activity, note="", staged="", attached=False):
+    """One entry of the `panes` read, shaped exactly as panes.by_session() returns it.
+    Demo mode never opens a real tmux socket, so these are the only panes it sees."""
+    return {"activity": activity, "note": note, "staged": staged, "attached": attached}
+
+
 def _issue(id_, title, priority, type_="task", parent=None, hours=3):
     return {"id": id_, "title": title, "priority": priority, "issue_type": type_,
             "status": "open", "parent": parent, "created_at": _ago(days=2),
@@ -26,16 +32,21 @@ def _issue(id_, title, priority, type_="task", parent=None, hours=3):
 
 
 def fixtures():
+    # mobile_app is parked: a healthy state that used to be indistinguishable from a
+    # crash, so the demo has to contain one. Its agents are stopped and stay stopped.
     rigs_meta = [
-        ("web_platform", "wp", 3), ("billing_api", "ba", 1), ("mobile_app", "ma", 0),
+        ("web_platform", "wp", 3, "operational"),
+        ("billing_api", "ba", 1, "operational"),
+        ("mobile_app", "ma", 0, "parked"),
     ]
 
     rig_blocks = []
-    for name, prefix, polecats in rigs_meta:
+    for name, prefix, polecats, rig_status in rigs_meta:
+        up = rig_status == "operational"
         agents = [
-            _agent("witness", f"{name}/witness", "witness", f"{prefix}-witness"),
+            _agent("witness", f"{name}/witness", "witness", f"{prefix}-witness", running=up),
             _agent("refinery", f"{name}/refinery", "refinery", f"{prefix}-refinery",
-                   state="working" if polecats else "idle", work=bool(polecats)),
+                   running=up, work=bool(polecats)),
         ]
         for i in range(polecats):
             pc = ["Toast", "Slit", "Nux"][i]
@@ -43,9 +54,15 @@ def fixtures():
             # in the fixture so --demo shows the Done group, not just working/idle.
             done = pc == "Nux"
             agents.append(_agent(pc, f"{name}/{pc}", "polecat", f"{prefix}-{pc.lower()}",
-                                 running=not done, state="done" if done else "working",
+                                 running=not done, state="done" if done else "idle",
                                  work=not done, mail=1 if i == 0 else 0,
                                  subject="PR ready: session rotation fix" if i == 0 else None))
+        if polecats:
+            # billing_api's crew workspace exists but was never started — no session,
+            # no pane, nothing wrong. It must not read like the parked rig or a crash.
+            started = name == "web_platform"
+            agents.append(_agent("joel", f"{name}/crew/joel", "crew",
+                                 f"{prefix}-crew-joel", running=started))
         rig_blocks.append({
             "name": name, "polecats": None, "polecat_count": polecats, "crews": None,
             "crew_count": 1 if polecats else 0, "has_witness": True, "has_refinery": True,
@@ -61,7 +78,11 @@ def fixtures():
         "daemon": {"running": True, "pid": 4242},
         "dolt": {"running": True, "pid": 4243, "port": 3307, "data_dir": "~/gt/.dolt-data"},
         "tmux": {"socket": "gt-demo", "running": True, "pid": 4244, "session_count": 11},
-        "agents": [_agent("mayor", "mayor/", "coordinator", "hq-mayor", state="working", mail=2,
+        # The mayor and the deacon are the demo's whole argument: gt reports both as
+        # state=idle with an empty hook, and their panes (below) say one is mid-turn
+        # and the other stranded on an unsent answer. Do not "fix" these to working —
+        # reading idle here while the tab reads Working is the point.
+        "agents": [_agent("mayor", "mayor/", "coordinator", "hq-mayor", mail=2,
                           subject="Escalation: invoice totals drift on split refunds"),
                    _agent("deacon", "deacon/", "health-check", "hq-deacon")],
         "rigs": rig_blocks,
@@ -69,9 +90,48 @@ def fixtures():
                     "refinery_count": 3, "active_hooks": 6},
     }
 
-    rigs = [{"name": n, "beads_prefix": p, "status": "operational", "witness": "running",
-             "refinery": "running", "polecats": c, "crew": 1 if c else 0}
-            for n, p, c in rigs_meta]
+    rigs = [{"name": n, "beads_prefix": p, "status": st,
+             "witness": "running" if st == "operational" else "stopped",
+             "refinery": "running" if st == "operational" else "stopped",
+             "polecats": c, "crew": 1 if c else 0}
+            for n, p, c, st in rigs_meta]
+
+    # The deacon's dog pack. `gt dog list --json` names no tmux session, so the front
+    # end matches a dog to one by name — charlie is registered but has no session at
+    # all, which is how a dog that was never started should read.
+    dogs = [
+        {"name": "alpha", "state": "working", "last_active": _ago(minutes=1),
+         "worktrees": {"web_platform": "~/gt/deacon/dogs/alpha/web_platform"}},
+        {"name": "bravo", "state": "idle", "last_active": _ago(hours=2),
+         "worktrees": {"web_platform": "~/gt/deacon/dogs/bravo/web_platform"}},
+        {"name": "charlie", "state": "idle", "last_active": _ago(days=1), "worktrees": {}},
+    ]
+
+    # Keyed by tmux session, exactly as panes.by_session() returns it. Every session
+    # a demo agent claims appears here; a stopped agent has none. hq-boot claims none
+    # of them — it is the unclaimed-session case, an agent no `gt` read lists at all.
+    # ("unknown" — a session whose screen we could not read — has no fixture; it is a
+    # failure mode, not a state of the town.)
+    panes = {
+        "hq-mayor": _pane("working", "✳ Deliberating… (4m 12s · ↓ 18.2k tokens)"),
+        "hq-deacon": _pane("staged", "✻ Brewed for 5m 7s",
+                           "run continuously until something needs me"),
+        "hq-boot": _pane("idle", "✻ Sautéed for 23s"),
+        "hq-dog-alpha": _pane("working", "✻ Reaping… (48s · ↓ 2.1k tokens)"),
+        "hq-dog-bravo": _pane("idle", "✻ Simmered for 1m 4s"),
+        "wp-witness": _pane("working", "✽ Julienning… (11m 6s · ↓ 31.1k tokens)"),
+        "wp-refinery": _pane("idle", "✻ Cooked for 19s · 1 shell still running"),
+        "wp-toast": _pane("working", "✻ Churning… (2m 38s · ↓ 9.4k tokens)"),
+        # Assigned but not thinking: a bead on its hook and an empty prompt. Before
+        # gc-vy3 this and wp-toast were the same row.
+        "wp-slit": _pane("idle", "✻ Cooked for 6s"),
+        # Attached — someone is sitting in this pane, so unsent text is as likely to
+        # be a human mid-sentence as a stranding, and the row says so.
+        "wp-crew-joel": _pane("staged", "✻ Sautéed for 12s", "take wp-111", attached=True),
+        "ba-witness": _pane("idle", "✻ Brewed for 3s"),
+        "ba-refinery": _pane("idle", "✻ Cooked for 41s"),
+        "ba-toast": _pane("working", "✳ Percolating… (55s · ↓ 3.7k tokens)"),
+    }
 
     ready = {
         "sources": [
@@ -120,7 +180,9 @@ def fixtures():
         "status": status,
         "rigs": rigs,
         "ready": ready,
+        "dogs": dogs,
         "models": models,
+        "panes": panes,
         # Every list below arrives deliberately out of order — the console sorts each one
         # newest-first itself (gc-feh), and a pre-sorted fixture would hide a regression.
         "mail": [

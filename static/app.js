@@ -160,24 +160,83 @@ function renderTop(s) {
     `<span class="svc"><i class="dot ${up ? "on" : "off"}"></i>${esc(n)}${extra ? ` <span class="muted">${esc(extra)}</span>` : ""}</span>`).join("");
 }
 
+/** A dog's tmux session. `gt dog list --json` names none, so match the pack against
+    the live session list — `hq-dog-alpha` today, anything ending `dog-<name>` if the
+    town prefix ever changes. "" means the dog is registered but has no session. */
+const dogSession = (name, panes) => {
+  const want = `dog-${name}`;
+  return Object.keys(panes).find((s) => s === want || s.endsWith(`-${want}`)) || "";
+};
+
+/** Every agent in town, from three reads that each see a different slice of it:
+
+      `gt status --json`     town agents and rig agents — but no dogs and no boot
+      `gt dog list --json`   the deacon's dog pack, which status omits entirely
+      the tmux session list  anything else holding a session, boot most often
+
+    The third is the safety net, and the reason `panes` is keyed by session rather
+    than by agent: whatever `gt` forgets to name still shows up, so a live agent can
+    never be invisible. Dogs and loose sessions have no mail address, so they carry
+    address:"" and the compose datalist drops them rather than offering an address
+    that would bounce. */
 function allAgents(s) {
-  const town = (s.agents || []).map((a) => ({ ...a, rig: "town" }));
-  const rigged = (s.rigs || []).flatMap((r) => (r.agents || []).map((a) => ({ ...a, rig: r.name })));
+  const panes = dataOf("panes", {}) || {};
+  const read = Object.keys(panes).length > 0;
+  const town = (s.agents || []).map((a) => ({ ...a, rig: "town", source: "gt status" }));
+  const rigged = (s.rigs || []).flatMap((r) =>
+    (r.agents || []).map((a) => ({ ...a, rig: r.name, source: "gt status" })));
+  const claimed = new Set([...town, ...rigged].map((a) => a.session).filter(Boolean));
+
+  const dogs = (dataOf("dogs", []) || []).map((d) => {
+    const session = dogSession(d.name, panes);
+    if (session) claimed.add(session);
+    // With no pane read there is no session to match, but `gt dog list` only lists
+    // dogs that exist — trust it rather than reporting the whole pack never started.
+    return {
+      name: d.name, address: "", rig: "town", role: "dog", session,
+      running: !read || !!session, state: d.state || "", has_work: false,
+      unread_mail: 0, last_active: d.last_active, source: "gt dog list",
+    };
+  });
+
+  const loose = Object.keys(panes).filter((n) => !claimed.has(n)).map((n) => ({
+    name: n, address: "", rig: "town", role: "session", session: n,
+    running: true, state: "", has_work: false, unread_mail: 0, source: "tmux session",
+  }));
+
   // Agents carry no timestamp (verified against live `gt status --json`), so there is
   // nothing to sort newest-first by; order town first, then rig, then address.
-  return byKey([...town, ...rigged], (a) =>
+  return byKey([...town, ...rigged, ...dogs, ...loose], (a) =>
     `${a.rig === "town" ? "0" : "1" + a.rig}\u0000${a.address || a.name || ""}`);
+}
+
+/** What every agent row is read against: the pane map, which rigs are parked, and
+    whether the pane read landed at all. Built once per render — `panes` can error
+    (tmux down) or lag the first paint, and `live:false` is what makes the tab fall
+    back to gt's own signals instead of declaring the whole town stopped. */
+function agentCtx() {
+  const panes = dataOf("panes", {}) || {};
+  const parked = new Set((dataOf("rigs", []) || [])
+    .filter((r) => String(r.status || "").toLowerCase() === "parked")
+    .map((r) => r.name));
+  return { panes, parked, live: Object.keys(panes).length > 0 };
 }
 
 function renderKpis(s) {
   const agents = allAgents(s);
+  const ctx = agentCtx();
   const up = agents.filter((a) => a.running).length;
+  // Derived from panes like the tab itself — counting gt's state="working" here was
+  // the same lie in a bigger font.
+  const busy = agents.filter((a) => agentState(a, ctx).key === "working").length;
+  const stuck = agents.filter((a) => agentState(a, ctx).key === "staged").length;
   const ready = dataOf("ready", {}) || {};
   const esc_ = dataOf("escalations", []) || [];
   const mail = dataOf("mail", []) || [];
   const unread = mail.filter((m) => !pick(m, ["read", "is_read"], false)).length;
   const cards = [
-    { v: `${up}/${agents.length}`, l: "Agents up", cls: up === agents.length && agents.length ? "good" : "", sub: agents.filter((a) => a.state === "working").length ? `${agents.filter((a) => a.state === "working").length} working` : "all idle" },
+    { v: `${busy}/${agents.length}`, l: "Agents working", cls: busy ? "good" : "",
+      sub: `${up} up${stuck ? ` · ${stuck} with input staged` : ""}` },
     { v: num(s.summary?.rig_count), l: "Rigs", sub: `${num(s.summary?.polecat_count)} polecats · ${num(s.summary?.crew_count)} crew` },
     { v: num(ready.summary?.total), l: "Ready work", sub: `P1 ${num(ready.summary?.p1_count)} · P2 ${num(ready.summary?.p2_count)}` },
     { v: num(s.summary?.active_hooks), l: "Active hooks", sub: "work on an agent" },
@@ -205,11 +264,15 @@ function renderRigs(s) {
   $("#rigs").innerHTML = errNote("status") + (rigs.length ? rigs.map((r) => {
     const m = meta[r.name] || {};
     const hooks = (r.hooks || []).filter((h) => h.has_work).length;
+    // Parked is a decision, not a fault — grey, and named. Red is reserved for a rig
+    // that is neither running nor deliberately stood down.
+    const parked = String(m.status || "").toLowerCase() === "parked";
     return `
       <div class="rig">
         <div class="rig-head">
-          <i class="dot ${m.status === "operational" ? "on" : "off"}"></i>
+          <i class="dot ${m.status === "operational" ? "on" : parked ? "done" : "off"}"></i>
           <span class="rig-name">${esc(r.name)}</span>
+          ${parked ? '<span class="badge">parked</span>' : ""}
           ${m.beads_prefix ? `<span class="badge mono">${esc(m.beads_prefix)}</span>` : ""}
         </div>
         <div class="rig-stats">
@@ -314,24 +377,74 @@ function renderWork() {
 
 /* ---------------- agents ----------------
    This tab exists to answer one question — which agent is working right now — so
-   state is the primary sort key and each state gets its own labelled group. A
-   finished polecat reports state="done" with running=false: that is a normal end,
-   not a failure, so it must not read like a stopped agent. Order is the order of
-   this table. */
+   state is the primary sort key and each state gets its own labelled group.
+
+   Until gc-vy3 it answered a different question. `gt status --json` has a `state`
+   field and it does not mean activity: it means "is there a bead on this agent's
+   hook". The Mayor executes tool calls for hours reading state=idle has_work=false
+   because nothing is slung to it, and for the persistent agents — mayor, deacon,
+   witness, refinery — that is nearly all the time. So activity now comes from the
+   `panes` read, which looks at what is on the agent's screen (see panes.py), and
+   the hook flag survives as its own separately labelled signal because it is real
+   information about a different thing.
+
+   The two states worth the trouble are `working` — a turn actually in flight — and
+   `staged`, a finished turn with text sitting unsent in the input box. Every
+   stranding this town has caught (hq-1e2, hq-cat, two more) had exactly that shape
+   and was caught only because somebody happened to look at a pane.
+
+   The rest of the table is about not crying wolf: a finished polecat (done), a
+   parked rig's agents, and a workspace nobody ever started are all healthy, and
+   none of them may read like the one row that means something broke. Order is the
+   order of this table. */
 const AGENT_STATES = [
-  { key: "working", label: "Working", dot: "busy", badge: "working" },
-  { key: "idle", label: "Idle", dot: "on", badge: "" },
-  { key: "done", label: "Done", dot: "done", badge: "ok" },
-  { key: "stopped", label: "Stopped", dot: "off", badge: "bad" },
+  { key: "working",  label: "Working",      hint: "a turn is in flight",           dot: "busy", badge: "working" },
+  { key: "staged",   label: "Input staged", hint: "turn ended, text never sent",   dot: "warn", badge: "warn" },
+  { key: "assigned", label: "Assigned",     hint: "bead on the hook, not thinking", dot: "on",  badge: "ok" },
+  { key: "idle",     label: "Idle",         hint: "alive at an empty prompt",      dot: "on",   badge: "" },
+  { key: "unknown",  label: "Unreadable",   hint: "session up, screen not legible", dot: "", badge: "" },
+  { key: "done",     label: "Done",         hint: "finished and exited",           dot: "done", badge: "ok" },
+  { key: "parked",   label: "Parked",       hint: "rig is parked — expected",      dot: "done", badge: "" },
+  { key: "unstarted", label: "Not started", hint: "no session — never launched",   dot: "done", badge: "" },
+  { key: "stopped",  label: "Stopped",      hint: "session up, agent gone",        dot: "off",  badge: "bad" },
 ];
 
-/** Bucket an agent into AGENT_STATES. Unrecognised states sort with idle, but the
-    row still shows gt's own wording rather than ours. */
-function agentState(a) {
-  const st = String(a.state || "").toLowerCase();
-  const key = st === "working" ? "working" : st === "done" ? "done" : a.running ? "idle" : "stopped";
+/** Bucket an agent into AGENT_STATES, from its pane where there is one and from gt
+    where there is not. Ordering inside matters: a pane read beats everything because
+    it is the only evidence of what is happening *now*, and "stopped" is reserved for
+    the one genuinely wrong shape — tmux still holds the session but gt says the agent
+    is gone. Missing pane + missing session is "never started", which is not a fault. */
+function agentState(a, ctx) {
+  const gt = String(a.state || "").toLowerCase();
+  const pane = ctx.live ? ctx.panes[a.session || ""] : null;
+  let key;
+  if (pane) {
+    key = pane.activity === "working" || pane.activity === "staged" ? pane.activity
+      : !a.running && a.session ? "stopped"
+        : pane.activity === "unknown" ? "unknown"
+          : a.has_work ? "assigned" : "idle";
+  } else if (!ctx.live) {
+    // No pane read — tmux is down, or the panel has not landed yet. Fall back to gt's
+    // own signals so the tab degrades to what it showed before rather than to nothing.
+    key = gt === "done" ? "done" : a.running ? (a.has_work ? "assigned" : "idle")
+      : ctx.parked.has(a.rig) ? "parked" : "unstarted";
+  } else {
+    key = gt === "done" ? "done" : ctx.parked.has(a.rig) ? "parked" : "unstarted";
+  }
   const rank = AGENT_STATES.findIndex((x) => x.key === key);
   return { ...AGENT_STATES[rank], rank };
+}
+
+/** The one line of the agent's own screen worth putting on the row: what it is doing
+    if it is doing something, what is sitting unsent if it is not. Agent-authored text
+    — the server clips it, esc() escapes it, and neither is optional. */
+function agentNote(a, ctx) {
+  const pane = ctx.live ? ctx.panes[a.session || ""] : null;
+  if (!pane) return "";
+  if (pane.activity === "staged") {
+    return `unsent: ${pane.staged}${pane.attached ? "  (someone is attached)" : ""}`;
+  }
+  return pane.note;
 }
 
 /** Stable identity for an agent across refreshes — the array index is not one. */
@@ -342,15 +455,25 @@ const detailId = (key) => `agent-detail-${key.replace(/[^a-zA-Z0-9]+/g, "-")}`;
     field in `gt status --json` — verified, the key is simply absent — so nothing here
     claims to show what an agent is working on. `models` is the models panel, keyed by
     address; it is a separate read because gt carries no model either. */
-function agentDetail(a, models) {
+function agentDetail(a, models, ctx) {
   const runtime = [a.agent_alias, a.agent_info !== a.agent_alias ? a.agent_info : ""].filter(Boolean).join(" · ");
+  const st = agentState(a, ctx);
+  const pane = ctx.live ? ctx.panes[a.session || ""] : null;
   const fields = [
     ["Rig", a.rig, ""],
     ["Address", a.address, "mono"],
     ["Role", a.role, ""],
-    ["State", a.state, ""],
+    // Derived here, from the agent's screen. Directly above gt's own word for the
+    // same agent, because the two disagree constantly and both are worth seeing.
+    ["Activity", `${st.label} — ${st.hint}`, ""],
+    ["Pane", pane ? pane.note || "(no status line)" : "", "wrap"],
+    ["Unsent input", pane ? pane.staged : "", "wrap"],
+    // What gt calls the state. It tracks the hook, not activity — see AGENT_STATES.
+    ["gt state", a.state, ""],
     ["Process", a.running ? "running" : "not running", ""],
-    ["Session", a.session || "no session", "mono"],
+    ["Session", a.session ? a.session + (pane?.attached ? " (attached)" : "") : "no session", "mono"],
+    ["Listed by", a.source, ""],
+    ["Last active", a.last_active ? ago(a.last_active) : "", ""],
     ["Hook", a.has_work ? "has work" : "empty", ""],
     ["Unread mail", a.unread_mail ? `${a.unread_mail}` : "none", ""],
     // Fetched on every refresh and, until now, rendered nowhere.
@@ -368,12 +491,13 @@ function agentDetail(a, models) {
     .join("")}</dl>`;
 }
 
-function agentRow(a, models) {
-  const st = agentState(a);
+function agentRow(a, models, ctx) {
+  const st = agentState(a, ctx);
   const key = agentKey(a);
   const open = state.expanded.has(key);
+  const note = agentNote(a, ctx);
   return `
-    <div class="agent ${st.key === "working" ? "is-working" : ""}">
+    <div class="agent ${st.key === "working" ? "is-working" : ""} ${st.key === "staged" ? "is-staged" : ""}">
       <button type="button" class="row agent-row" data-agent="${esc(key)}"
               aria-expanded="${open}" aria-controls="${esc(detailId(key))}">
         <i class="dot ${st.dot}"></i>
@@ -385,14 +509,15 @@ function agentRow(a, models) {
             <span class="mono">${esc(a.session || "no session")}</span>
             ${a.unread_mail ? `<span class="badge warn">${esc(a.unread_mail)} mail</span>` : ""}
           </span>
+          ${note ? `<span class="agent-note">${esc(note)}</span>` : ""}
         </span>
         <span class="row-side">
           ${a.has_work ? '<span class="badge ok">has work</span>' : ""}
-          <span class="badge ${st.badge}">${esc(a.state || (a.running ? "running" : "stopped"))}</span>
+          <span class="badge ${st.badge}">${esc(st.label)}</span>
           <svg viewBox="0 0 24 24" class="ico chev" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
         </span>
       </button>
-      ${open ? agentDetail(a, models) : ""}
+      ${open ? agentDetail(a, models, ctx) : ""}
     </div>`;
 }
 
@@ -402,28 +527,37 @@ function renderAgents(s) {
   // Its own panel, on its own slower cadence, so it may still be empty for a beat
   // after the agents themselves land. Missing simply means no Model row.
   const models = dataOf("models", {}) || {};
-  $("#agent-addresses").innerHTML = all.map((a) => `<option value="${esc(a.address)}">`).join("")
+  const ctx = agentCtx();
+  // Dogs and loose tmux sessions have no mail address; offering one would bounce.
+  $("#agent-addresses").innerHTML = all.filter((a) => a.address)
+    .map((a) => `<option value="${esc(a.address)}">`).join("")
     + (s.rigs || []).map((r) => `<option value="${esc(r.name)}/">`).join("");
 
   // State first — working agents can never be buried mid-list. Array.prototype.sort
   // is stable, so allAgents()'s town/rig/address order survives as the tiebreak
-  // inside each group (agents carry no timestamp to break ties on).
-  const agents = byKey(all, (a) => String(agentState(a).rank));
+  // inside each group (agents carry no timestamp to break ties on). Rank is padded
+  // because the table outgrew one digit and "10" sorts before "2" as a string.
+  const rank = (a) => String(agentState(a, ctx).rank).padStart(2, "0");
+  const agents = byKey(all, rank);
   const counts = {};
-  agents.forEach((a) => (counts[agentState(a).key] = (counts[agentState(a).key] || 0) + 1));
+  agents.forEach((a) => { const k = agentState(a, ctx).key; counts[k] = (counts[k] || 0) + 1; });
   let last = null;
   const rows = agents.map((a) => {
-    const st = agentState(a);
+    const st = agentState(a, ctx);
     const head = st.key === last ? ""
-      : `<div class="group-head ${st.key === "working" ? "is-working" : ""}">${esc(st.label)} · ${counts[st.key]}</div>`;
+      : `<div class="group-head ${st.key === "working" ? "is-working" : ""}">${esc(st.label)} · ${counts[st.key]}
+           <span class="group-hint">${esc(st.hint)}</span></div>`;
     last = st.key;
-    return head + agentRow(a, models);
+    return head + agentRow(a, models, ctx);
   }).join("");
 
   // An 8s auto-refresh rebuilds this subtree; expansion lives in state.expanded so it
   // survives, and the focused row is restored so keyboard focus does not jump to <body>.
   const focused = document.activeElement?.dataset?.agent;
-  $("#agents").innerHTML = errNote("status") + (agents.length ? rows : empty("No agents"));
+  // panes and dogs each carry a slice of this tab; say so when one is failing rather
+  // than quietly showing a town that looks asleep.
+  $("#agents").innerHTML = errNote("status") + errNote("panes") + errNote("dogs")
+    + (agents.length ? rows : empty("No agents"));
   if (focused) $$("#agents [data-agent]").find((el) => el.dataset.agent === focused)?.focus();
 }
 

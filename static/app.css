@@ -187,6 +187,7 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 .dot.on { background: var(--green); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 18%, transparent); }
 .dot.off { background: var(--red); box-shadow: 0 0 0 3px color-mix(in srgb, var(--red) 15%, transparent); }
 .dot.busy { background: var(--blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 18%, transparent); }
+.dot.warn { background: var(--yellow); box-shadow: 0 0 0 3px color-mix(in srgb, var(--yellow) 18%, transparent); }
 
 .badge {
   display: inline-flex; align-items: center; gap: 5px;
@@ -227,6 +228,18 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 .badge.working { background: var(--blue); border-color: var(--blue); color: var(--bg); }
 .dot.done { background: var(--faint); box-shadow: 0 0 0 3px color-mix(in srgb, var(--faint) 15%, transparent); }
 .group-head.is-working { color: var(--blue); }
+
+/* An agent whose turn ended with text it never sent. Edged, not tinted: it wants a
+   second glance, but the blue row is still the one that answers the tab's question. */
+.agent.is-staged { border-color: color-mix(in srgb, var(--yellow) 50%, transparent); }
+
+/* One line of the agent's own screen — what it is doing, or what is sitting unsent.
+   Truncated hard: it is agent-authored prose and will happily fill the row. */
+.agent-note {
+  display: block; margin-top: 4px; font-size: 12px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.agent.is-staged .agent-note { color: var(--yellow); }
 
 .chev { color: var(--faint); transition: transform .15s; }
 .agent-row[aria-expanded="true"] .chev { transform: rotate(90deg); }
@@ -285,7 +298,13 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
   display: flex; align-items: center; gap: 8px; margin: 14px 2px 4px;
   color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: .07em; font-weight: 650;
 }
-.group-head::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.group-head::after { content: ""; flex: 1; height: 1px; background: var(--border); order: 2; }
+/* What the group label means, in the label's own line. The states are only useful if
+   nobody has to guess which of "idle" and "not started" is the bad one. */
+.group-hint {
+  color: var(--faint); text-transform: none; letter-spacing: 0; font-weight: 400;
+  order: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
 
 /* ---------- compose ---------- */
 .compose { margin-bottom: 14px; }

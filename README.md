@@ -37,7 +37,7 @@ town at `~/gt` (override with `--town`).
 |---|---|
 | **Overview** | Agents up, rigs, ready work, active hooks, escalations, unread mail · rig health · priority histogram · recently closed |
 | **Work** | Every ready issue across town, with live search and source/priority filters |
-| **Agents** | Every agent in every rig — running/idle/working, session, role, mail |
+| **Agents** | Every agent in town — including the deacon's dogs and anything else holding a session — grouped by what it is actually doing, read from its screen: working, input staged, assigned, idle, done, parked, not started, stopped |
 | **Mail** | Inbox, plus compose with address autocomplete and voice dictation |
 | **Activity** | The `gt trail` event feed |
 
@@ -55,6 +55,12 @@ the server **never shells out on the request path**. A background scheduler refr
 panel on its own cadence into a cache, and HTTP always serves that cache — requests answer in
 single-digit milliseconds no matter how slow the CLI is. Panels carry their own age, and a
 failed refresh keeps the last good data rather than blanking the panel.
+
+The Agents tab does not trust `gt`'s `state` field, because it means "has a bead on its hook"
+rather than "is doing something" — a mayor executing tool calls for an hour reads `idle`. So
+activity is derived from the agent's tmux pane instead, on the same background scheduler. That
+also makes the console the first thing in the town that spots a *stranding* — a finished turn
+with an answer still sitting unsent in the input box — without somebody having to go and look.
 
 ## Security
 

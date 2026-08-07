@@ -24,7 +24,8 @@ not a module; `static/app.css` is hand-written CSS with custom properties.
   cadence into `_cache`. Cadences live in the `READS` table — that table is the single place a
   read is declared: name → (source, refresh interval). A source is normally `gt` argv; it may
   also be a callable returning `(data, error)`, for a read that is not a `gt` call at all (the
-  `models` panel, see `models.py`). Adding a read means adding a row here, nowhere else.
+  `models` panel, see `models.py`; the `panes` panel, see `panes.py`). Adding a read means
+  adding a row here, nowhere else.
 - HTTP handlers **only read `_cache`**. `GET /api/snapshot` returns every panel plus its age;
   `GET /api/panel/<name>` returns one panel in the same shape (debug convenience — the UI uses
   only `/api/snapshot` and `POST /api/mail`).
@@ -37,13 +38,15 @@ not a module; `static/app.css` is hand-written CSS with custom properties.
 
 Any change that makes a handler block on a subprocess is wrong, no matter how fast it looks on
 a quiet town. Measure on a busy town, not yours. The rule is about slow work, not subprocesses
-specifically — `models.py` reads the filesystem rather than shelling out, and it lives behind
-the same scheduler for the same reason.
+specifically — `models.py` reads the filesystem rather than shelling out, and `panes.py` shells
+out to `tmux` rather than to `gt`; both live behind the same scheduler for the same reason.
+`panes` costs one `capture-pane` per session in town, which is milliseconds each and still has
+no business on a request path.
 
 There are now **no exceptions**: `refresh()` is called only from the scheduler pool, and it
-returns immediately under `--demo` so no read path can shell out — or touch a real transcript —
-with fixtures loaded. Both places that invoke `gt` (`refresh()` and `send_mail()`) are
-demo-guarded. Keep it that way.
+returns immediately under `--demo` so no read path can shell out — or touch a real transcript,
+or a real tmux socket — with fixtures loaded. Every place that spawns a subprocess (`refresh()`,
+`send_mail()`, and `panes.py` beneath `refresh()`) is demo-guarded. Keep it that way.
 
 ## Security posture
 
@@ -61,7 +64,9 @@ Other things not to erode:
 - Binding off localhost auto-generates a token (`--token`, or `--no-auth` to opt out). The token
   is a speed bump, not authentication; the README correctly points people at Tailscale/WireGuard.
 - The front end builds HTML with `innerHTML` and hand-escapes **every** interpolated value
-  through `esc()`. Every value from `gt` is untrusted. If you add markup, `esc()` it.
+  through `esc()`. Every value from `gt` is untrusted, and the `panes` read is worse — it is
+  whatever an agent wrote on its own screen, including tmux session names. If you add markup,
+  `esc()` it.
 - `_file()` refuses paths that escape `static/`.
 
 ## Layout
@@ -70,7 +75,8 @@ Other things not to erode:
 |---|---|
 | `server.py` | HTTP handlers + the refresh scheduler + `READS`/`WRITE_ACTIONS`. ~250 lines; keep it that way. |
 | `demo.py` | Synthetic fixtures for `--demo`. |
-| `models.py` | The `models` read: which model each agent runs, from its Claude Code transcript. `gt` carries no model field, so this is the one read that is not a `gt` call. |
+| `models.py` | The `models` read: which model each agent runs, from its Claude Code transcript. |
+| `panes.py` | The `panes` read: what each agent is *doing*, from its tmux screen. `gt`'s `state` field means "has a bead on its hook", not "is working", so this is the console's only source of activity. |
 | `static/index.html` | The whole page skeleton; every panel is an empty `<div id=…>`. |
 | `static/app.js` | Fetch, state, and all rendering. Vanilla JS, no framework. |
 | `static/app.css` | Themes via `:root` custom properties + `:root[data-theme="light"]`. |
