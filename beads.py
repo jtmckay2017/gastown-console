@@ -111,6 +111,19 @@ def show(repo, ident, timeout=20):
     return row, None
 
 
+def comments(repo, ident, timeout=20):
+    """One bead's comments, as (rows, error). `bd show` carries only a count of them, so
+    anything that has to read what a comment SAYS needs this second call. The console's
+    approval records live here (dispatch.py) — a bead's fields belong to whoever is
+    planning it, and an audit trail that had to share one would keep colliding with them.
+
+    Write path only, like show(): this is `bd`, so it may not go near a read."""
+    parsed, err = _bd(repo, ["comments", ident], timeout, strict=True)
+    if err:
+        return None, err
+    return (parsed if isinstance(parsed, list) else []), None
+
+
 def write(repo, args, timeout=60):
     """One `bd` write, as (parsed, error). Longer default timeout than a read: a write
     takes a Dolt commit, and a write that times out half-done is worse than one that

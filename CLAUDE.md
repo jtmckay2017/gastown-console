@@ -68,15 +68,20 @@ which is why it runs on the slowest cadence in the table and trims hard before i
 so no read path can shell out — or touch a real transcript, or a real tmux socket, or a real
 beads repo — with fixtures loaded.
 
-**Writes are the other shape and they are allowed to block.** `POST /api/mail` and the three
-bead writes (`edit.py`) call `gt`/`bd` on the request thread on purpose. A write happens when
-somebody presses a button, it is one call rather than a poll, and it has to be synchronous:
-the operator is owed an answer about whether their edit landed, and a write queued onto the
-scheduler could not give one — it would be exactly the fire-and-forget the feature exists to
-rule out. That is a licence for a POST and for nothing else. If you find yourself wanting a
-GET to shell out, you want a scheduler entry.
+**Writes are the other shape and they are allowed to block.** `POST /api/mail`, the three bead
+writes (`edit.py`) and the dispatch (`dispatch.py`) call `gt`/`bd` on the request thread on
+purpose. A write happens when somebody presses a button, it is one call rather than a poll, and
+it has to be synchronous: the operator is owed an answer about whether it landed, and a write
+queued onto the scheduler could not give one — it would be exactly the fire-and-forget the
+feature exists to rule out. That is a licence for a POST and for nothing else. If you find
+yourself wanting a GET to shell out, you want a scheduler entry.
 
-Every place that spawns a subprocess (`refresh()`, `send_mail()`, `edit.py`, and
+The dispatch is the longest of them by far — `gt sling` spawns a polecat and boots a rig, and
+it is allowed three minutes. That is deliberate: the worst answer this console can give is "it
+failed" about a dispatch that actually ran, so on a timeout it says it does not know, rather
+than guessing at the cheaper-sounding half.
+
+Every place that spawns a subprocess (`refresh()`, `send_mail()`, `edit.py`, `dispatch.py`, and
 `panes.py`/`beads.py` beneath them) is demo-guarded. Keep it that way.
 
 ## Hard constraint 3: nothing is reachable by mouse only
@@ -142,32 +147,70 @@ two flags on it.
 
 ## Security posture
 
-Read-mostly, with a **four-entry write allowlist** — `WRITE_ACTIONS`; `do_POST` refuses
-anything not in it. There is no shell passthrough and no command palette. That is a deliberate
-design, not an unfinished feature.
+Read-mostly, with a **write allowlist** — `WRITE_ACTIONS`; `do_POST` refuses anything not in
+it. There is no shell passthrough and no command palette. That is a deliberate design, not an
+unfinished feature.
 
-| Action | Runs | Owned by |
-|---|---|---|
-| `mail` | `gt mail send` | `send_mail()` in `server.py` |
-| `bead-new` | `bd create` in the rig's own repo | `edit.py` |
-| `bead-edit` | `bd update` — title, type, priority, description, design, acceptance, notes | `edit.py` |
-| `bead-link` | `bd dep add`, or `bd update --parent` | `edit.py` |
+| Action | Runs | Owned by | Where it is reachable |
+|---|---|---|---|
+| `mail` | `gt mail send` | `send_mail()` in `server.py` | anywhere the console is |
+| `bead-new` | `bd create` in the rig's own repo | `edit.py` | anywhere |
+| `bead-edit` | `bd update` — title, type, priority, description, design, acceptance, notes | `edit.py` | anywhere |
+| `bead-link` | `bd dep add`, or `bd update --parent` | `edit.py` | anywhere |
+| `dispatch` | `bd comment`, then `gt sling` | `dispatch.py` | **the loopback only** |
 
 **What is deliberately absent is as much of the design as what is there.** There is no delete,
 no close, no status change and no unlink. A planning surface that can destroy a bead is a
-different risk class; closing one is a claim about work that the console cannot verify; and
-putting an agent on one is a human signing something off, which is gc-dzd's whole subject and
-not a thing that arrives as part of an editor. `bd`'s vocabulary is much larger than this table
-and the gap is the point — adding a row to it is a design decision that needs a human, exactly
-like a new endpoint is.
+different risk class, and closing one is a claim about work that the console cannot verify.
+`bd`'s vocabulary is much larger than this table and the gap is the point — adding a row to it
+is a design decision that needs a human, exactly like a new endpoint is.
 
-Three properties hold for every bead write, and a change that breaks any of them is wrong:
+**The console can now start an agent, and that is the fifth row.** `dispatch` approves a plan
+and slings the bead, which spawns a fresh polecat that will write code and open a merge
+request — so this endpoint can merge code. It was argued for and decided rather than added
+(gc-dzd): dispatch already happens on the Mayor's judgement with the operator seeing a
+*description* of a plan, and a button that will not fire until a human has read the actual plan
+text is more gate than exists today, not less. Read the header of `dispatch.py` before you
+touch any of it. Four guards hold it up and **none of them is optional**:
 
-- **It can only touch a bead the console has already drawn.** `edit.apply()` checks the rig
-  against the backlog panel and the id against that rig's carried beads before anything else,
-  so a crafted `rig`, `id` or `target` has nothing to reach. The repo comes from `beads.repos()`
-  by exact label — never from the request — and under `--demo` the repo list handed in is empty,
-  so a demo write has no path to a database even in principle.
+1. **Loopback only, and absent rather than disabled.** Bound anywhere but `127.0.0.1`, the
+   action is not in `WRITE_ACTIONS` (so the POST is a 404, like a route nobody wrote) and the
+   served page carries `<meta name="gt-dispatch" content="off">` (so the control is never
+   built). `curl -s http://…/ | grep gt-dispatch` is the check, and it has two possible
+   answers — which is the whole reason the marker exists. The token a LAN binding generates is
+   a speed bump, and a speed bump in front of "start an autonomous agent" is not a lock.
+   Reaching this from a phone is an authentication decision and a separate bead.
+2. **The approval pins the plan.** The request carries every field as the console *showed* it
+   — including status and assignee — and the server re-reads the bead and refuses if any of
+   them moved, naming the field and handing back what the store says now. Agents rewrite these
+   beads continuously, so approving one plan and executing another is the expected failure
+   here, not the paranoid one.
+3. **The approval is recorded before anything runs**, as a `bd comment`: who, when, to what,
+   a sha256 over everything pinned, and the plan text as it was on screen. A comment and not a
+   field, because `notes` is one of the fields guard 2 pins — an approval written there would
+   move the thing it had just promised had not moved. If the sling then fails, that goes on the
+   record too, so the trail never claims something ran when nothing did.
+4. **One at a time, confirm on repeat.** One dispatch in flight across the whole console; a
+   bead that was already approved, is already on a hook, or has no plan written on it at all
+   takes a second deliberate press with the reason printed above the button.
+
+**Permanently out of scope, and not by omission:** auto-approve, batch approve, approve on a
+timer, or any dispatch triggered by a condition rather than a human pressing a button for one
+bead. This town spent 2026-08-07 cataloguing threshold-triggered destructive actions (hq-y89,
+hq-97l, hq-g7g); hq-ayx is the finding that ties them together, and a timer that slings would
+contradict it directly.
+
+Three properties hold for every bead write — `edit.py`'s three and `dispatch.py`'s one alike —
+and a change that breaks any of them is wrong:
+
+- **It can only touch a bead the console has already drawn.** `edit.apply()` and
+  `dispatch.apply()` check the rig against the backlog panel and the id against that rig's
+  carried beads before anything else, so a crafted `rig`, `id` or `target` has nothing to reach.
+  The repo comes from `beads.repos()` by exact label — never from the request — and under
+  `--demo` the repo list handed in is empty, so a demo write has no path to a database even in
+  principle. A dispatch is bounded twice over: its *destination* has to be an agent address or
+  rig name the `status` read actually carried, so it cannot hand work to something nobody told
+  the console about either.
 - **It cannot silently overwrite an agent.** Every edit carries what the console had for each
   field it writes; `edit.py` re-reads the bead from the store and refuses the whole write if
   any of them moved, naming the field and showing both versions. It is per field rather than per
@@ -208,6 +251,14 @@ Other things not to erode:
 
 - Binding off localhost auto-generates a token (`--token`, or `--no-auth` to opt out). The token
   is a speed bump, not authentication; the README correctly points people at Tailscale/WireGuard.
+  That is exactly why the console **drops a capability** rather than trusting the token when it
+  is bound past the loopback: reads and the four bead writes stay, `dispatch` goes. Startup says
+  which of the two consoles you are running, out loud, in the banner.
+- `_page()` fills one named marker into `index.html` and nothing else fills anything anywhere.
+  It is there so the loopback-only rule can be *inspected* rather than believed — a control
+  that a script decides not to draw looks identical, in the served HTML, to one that was never
+  built. One marker, substituted once. It is not a template engine and it must not become one:
+  a second marker means something belongs in a read instead.
 - The front end builds HTML with `innerHTML` and hand-escapes **every** interpolated value
   through `esc()`. Every value from `gt` is untrusted, and the `panes` read is worse — it is
   whatever an agent wrote on its own screen, including tmux session names. If you add markup,
@@ -229,16 +280,17 @@ Other things not to erode:
 
 | Path | What it is |
 |---|---|
-| `server.py` | HTTP handlers + the refresh scheduler + `READS`/`WRITE_ACTIONS`. ~420 lines and it should not grow much: handlers, the scheduler, the two tables, nothing else. Anything a handler needs to *know* belongs in the module that owns the read — or, for a write, the one that owns the write. `write_bead()` is the shape to copy: resolve, delegate, fold the answer into the cache, mark due. |
+| `server.py` | HTTP handlers + the refresh scheduler + `READS`/`WRITE_ACTIONS`. ~460 lines and it should not grow much: handlers, the scheduler, the two tables, nothing else. Anything a handler needs to *know* belongs in the module that owns the read — or, for a write, the one that owns the write. `write_bead()` is the shape to copy: resolve, delegate, fold the answer into the cache, mark due. It also owns the one thing that is decided by where the console is bound — `LOCAL`, and the three places it shows up: the allowlist, `_page()`, and the startup banner. |
 | `demo.py` | Synthetic fixtures for `--demo`. |
 | `models.py` | The `models` read: which model each agent runs, from its Claude Code transcript. |
 | `panes.py` | Two reads off the same tmux screens. `panes`: what each agent is *doing*, one summary line per session — `gt`'s `state` field means "has a bead on its hook", not "is working", so this is the console's only source of activity. `watch`: one agent's *whole* screen, for the live terminal view, and only while somebody has that view open. |
-| `beads.py` | The one way to run `bd` — reads (`run_bd`, `show`) and writes (`write`) alike. Owns repo discovery and the invocation, because a `bd` call against the wrong directory answers "nothing" instead of failing — see the section above. |
-| `edit.py` | The bead writes: create, edit, link. Owns what may be written, what a conflict is, and the re-read that makes "saved" mean the store agrees. The only module here that is allowed to be slow on a request path, and the header says why. |
+| `beads.py` | The one way to run `bd` — reads (`run_bd`, `show`, `comments`) and writes (`write`) alike. Owns repo discovery and the invocation, because a `bd` call against the wrong directory answers "nothing" instead of failing — see the section above. |
+| `edit.py` | The bead writes: create, edit, link. Owns what may be written, what a conflict is, and the re-read that makes "saved" mean the store agrees. Allowed to be slow on a request path, and the header says why. Its `values`/`norm`/`carried`/`done`/`no` are public because `dispatch.py` answers in the same shape — one payload shape for the pane, not two. |
+| `dispatch.py` | The fifth write, and the only one that *starts* something: approve a plan, record the approval, `gt sling`. Loopback only. Owns all four guards and its own `gt` invocation, because `gt sling` answers in prose rather than JSON and a write wants its failure text. Read its header before changing a line of it — every paragraph in there is a decision somebody already argued through. |
 | `flight.py` | The `flight` read: every bead that is neither open nor closed, and who holds it. `gt ready` drops a bead the moment it is picked up and no `gt` read carries an agent's work, so this is the only answer to "what is being worked on". One `bd list` per beads repo in town. |
 | `backlog.py` | The `backlog` read: each rig's whole backlog with its structure intact — the epic hierarchy, the `blocks` edges, and why every closed bead closed. The Work tab's reads are all about this minute; this is the one a ceremony reads. Slowest cadence, biggest payload, trimmed hardest. Also owns the prose table behind `GET /api/bead` — the four long fields, kept beside the panel rather than in it — and `apply_write()`, which folds a bead the console just wrote into that cache so a save is visible before the next read lands. |
 | `graph.py` | The same beads, drawn: epic trees and the `blocks` graph as SVG, laid out in stdlib Python. Not a read — it takes what `backlog.py` has already trimmed and rides inside that panel, so the picture and the lists beside it can never be a cadence apart. The one place markup is generated on the server, which is why it does its own escaping. Its nodes are controls rather than boxes — focusable, named, and read out in full by `app.js` — because every title in here is clipped to a pixel budget. |
-| `static/index.html` | The whole page skeleton; every panel is an empty `<div id=…>`. |
+| `static/index.html` | The whole page skeleton; every panel is an empty `<div id=…>`. The one exception to "static" is `<meta name="gt-dispatch">`, which the server fills in — see `_page()`. |
 | `static/app.js` | Fetch, state, and all rendering. Vanilla JS, no framework. Six lists drill a row down into the rest of what its read already carried; the shared half of that is the "expandable detail" section near the top — `state.open`, `expandRow()`, `detailGrid()`, `prose()`, `paint()`, `expander()`. Expansion keys are namespaced per panel, because one flat set would let a mail id and a rig name mean the same row. |
 | `static/app.css` | Themes via `:root` custom properties + `:root[data-theme="light"]`. |
 | `start.sh` | Restart helper; `--lan` binds `0.0.0.0` and prints a tokenized URL. |

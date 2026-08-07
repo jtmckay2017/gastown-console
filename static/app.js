@@ -1823,6 +1823,12 @@ function paneHtml(m) {
         <button type="button" class="btn small" data-form="edit">Edit</button>
         <button type="button" class="btn small" data-form="link">Link</button>
         <button type="button" class="btn small" data-form="mail">Send to an agent</button>
+        <!-- Last, and only on a console bound to this machine — see CAN_DISPATCH. It is
+             the one control here that starts something, so it sits apart from the three
+             that describe things, and it opens a form rather than firing: the plan has
+             to be read on the way through. -->
+        ${CAN_DISPATCH ? '<button type="button" class="btn small go" data-form="dispatch">'
+    + "Approve &amp; dispatch</button>" : ""}
       </div>
       <dl class="agent-detail pane-fields">${fields.map(([k, v]) =>
     `<div class="detail-item"><dt>${esc(k)}</dt><dd class="wrap">${esc(v)}</dd></div>`).join("")}</dl>
@@ -1951,7 +1957,21 @@ const FORM_PROSE = [
 const FORM_TYPES = ["task", "bug", "feature", "epic", "chore", "decision"];
 const FORM_LABEL = { title: "Title", priority: "Priority", type: "Type", parent: "Parent",
   ...Object.fromEntries(FORM_PROSE.map(([k, label]) => [k, label])) };
-const POSTS = { new: "/api/bead-new", edit: "/api/bead-edit", link: "/api/bead-link" };
+const POSTS = { new: "/api/bead-new", edit: "/api/bead-edit", link: "/api/bead-link",
+  dispatch: "/api/dispatch" };
+
+/* Whether this console can approve a plan and put an agent on it — decided by the
+   server, off the address it is bound to, and stamped into the page it served (see
+   server.py `_page()` and dispatch.py). It is read once, at load, on purpose: a
+   capability that could be switched on later is one a stray poll could switch on.
+
+   OFF, THE CONTROL IS NEVER BUILT. Not disabled, not hidden — never in the document.
+   Approving starts an autonomous agent that can merge code, and the token the server
+   generates for a LAN binding is a speed bump rather than authentication, so the answer
+   off the loopback is that this console does not have the feature at all. The endpoint
+   is missing too: `dispatch` is not in the server's allowlist there, so the POST this
+   file would send is a 404 even if something built the button anyway. */
+const CAN_DISPATCH = $('meta[name="gt-dispatch"]')?.content === "on";
 
 /** Open one form in the pane. `fields` is what it is editing and `base` is what the
     console had when it drew them — the two stay separate for the whole life of the form,
@@ -1967,15 +1987,23 @@ function openForm(kind) {
   const read = state.selData && state.selData.key === selKey();
   const prose = (read && !state.selData.error && state.selData.data) || {};
   if (kind !== "new" && !b) return void paneSays("Pick a card first.");
-  // The editor has to be seeded from a read that landed. One that opened on a half
-  // arrived response would offer to save a blank over somebody's plan, and the save
-  // would look exactly like a deliberate deletion afterwards.
-  if (kind === "edit" && (!read || state.selData.loading)) {
+  // Belt and braces behind CAN_DISPATCH: the button is never built off the loopback, and
+  // this is what happens if some other path ever calls for one anyway.
+  if (kind === "dispatch" && !CAN_DISPATCH) {
+    return void paneSays("This console cannot dispatch — it is not bound to this machine "
+      + "only, and approving a plan starts an agent that can merge code.");
+  }
+  // Both of these have to be seeded from a read that landed, for two versions of one
+  // reason. An editor opened on a half-arrived response would offer to save a blank over
+  // somebody's plan, and the save would look like a deliberate deletion afterwards. An
+  // approval opened on one would be a human signing off on a plan they were not shown.
+  const needsProse = kind === "edit" || kind === "dispatch";
+  if (needsProse && (!read || state.selData.loading)) {
     return void paneSays("Still reading this bead — try again in a moment.");
   }
-  if (kind === "edit" && state.selData.error) {
+  if (needsProse && state.selData.error) {
     return void paneSays(`This bead could not be read (${state.selData.error}), so there `
-      + "is nothing safe to edit from.");
+      + `is nothing safe to ${kind === "dispatch" ? "approve" : "edit"} from.`);
   }
 
   let fields = {};
@@ -1988,6 +2016,8 @@ function openForm(kind) {
       ...Object.fromEntries(FORM_PROSE.map(([k]) => [k, ""])) };
   } else if (kind === "link") {
     fields = { kind: "parent", target: "", parent: b.parent || "" };
+  } else if (kind === "dispatch") {
+    fields = { target: (dispatchTargets(b.rig)[0] || [""])[0] };
   } else {
     fields = { to: b.assignee || "", subject: `${b.id} — ${b.title}`, message: "" };
   }
@@ -2000,7 +2030,17 @@ function openForm(kind) {
     base: { ...fields },
     // Whichever long fields the server could only send part of. Editing one would save
     // the part over the whole — see backlog._prose(). Named, and refused, one by one.
-    clipped: new Set(kind === "edit" ? prose.clipped || [] : []),
+    // An approval does not write them, so it is allowed to proceed over one; it says so
+    // above the button instead, because approving a plan you were shown four fifths of
+    // is a thing the operator has to know they are doing.
+    clipped: new Set(kind === "edit" || kind === "dispatch" ? prose.clipped || [] : []),
+    // What this approval is pinned to: every field as the console drew it, sent with the
+    // dispatch and refused by the server if any of it moved. Only a dispatch has one —
+    // an edit pins the fields it writes and nothing else (see `base` and touched()).
+    pin: kind === "dispatch" ? pinnedOf(b, prose) : null,
+    // Set by the server's own refusal, never guessed at here: a repeat approval, a bead
+    // already on a hook, a bead with no plan on it at all.
+    reasons: [],
     conflicts: [], err: "", msg: "", busy: false,
   };
   state.paneNote = "";
@@ -2060,9 +2100,9 @@ function paintForm(fresh = false) {
 function formHtml(m) {
   const f = state.form;
   const head = paneHead(f.kind === "new" ? "Drafting" : f.kind === "mail" ? "Sending"
-    : f.kind === "link" ? "Linking" : "Editing");
+    : f.kind === "link" ? "Linking" : f.kind === "dispatch" ? "Approving" : "Editing");
   const body = f.kind === "mail" ? mailForm(m, f) : f.kind === "link" ? linkForm(m, f)
-    : beadForm(m, f);
+    : f.kind === "dispatch" ? dispatchForm(m, f) : beadForm(m, f);
   return head + `<div class="pane-body form-body">${body}</div>`;
 }
 
@@ -2175,6 +2215,151 @@ function mailForm(m, f) {
     ${formFoot(f, "Send")}`;
 }
 
+/* ---- approving a plan ----
+   The one control on this page that starts something. Everything above it changes what a
+   plan says; this hands the plan to an agent that will write code against it and open a
+   merge request, so a bad press costs a branch, a worktree and some tokens.
+
+   It is a form and not a button for one reason: the gate is that a HUMAN READ THE PLAN.
+   So the plan is on the same screen as the control, in full, taken from the same values
+   that are sent as the pin — the operator cannot be shown one thing and approve another,
+   because there is only one copy of it here.
+
+   THREE OF THE FOUR GUARDS SHOW UP IN THIS FILE. The fourth (localhost only) is above,
+   at CAN_DISPATCH, and is the reason none of this is ever built off the loopback.
+     · the pin travels with the request and the server refuses if the bead moved
+     · a repeat, a bead already on a hook, or a bead with no plan comes back as a refusal
+       that has to be pressed through deliberately — never a checkbox that starts ticked
+     · the button disables itself for the whole round trip, because a second press is a
+       second polecat and a second worktree, not a retry */
+
+/** What the console showed, field for field — the thing the approval is pinned to.
+
+    Spelled to match the server's own view of the same bead (dispatch.seen), NOT to be
+    convenient here: the status is lower-cased raw rather than run through beadStatus(),
+    which answers "?" for a bead with no status and would then disagree with the store on
+    every dispatch. Two spellings of one value is what a pin exists to catch, so the pin
+    itself may not have them. */
+function pinnedOf(b, prose) {
+  return {
+    title: b.title || "",
+    type: b.issue_type || "",
+    priority: b.priority == null ? "" : String(b.priority),
+    status: String(b.status || "").toLowerCase(),
+    assignee: b.assignee || "",
+    ...Object.fromEntries(FORM_PROSE.map(([k]) => [k, prose[k] || ""])),
+  };
+}
+
+/** Where this console will sling a bead belonging to `rig`, as [value, label] pairs.
+
+    The same rule dispatch.targets() enforces, off the same `status` read, and the server
+    is the one that decides — this list is a picker. If the two ever drift, the picker
+    offers something the server refuses, which is a visible error rather than a hole.
+
+    The rig itself comes first because it is the ordinary answer: `gt sling <bead> <rig>`
+    spawns a FRESH polecat, which is what dispatching a plan usually means. The agents
+    under it carry what they are and whether they are already holding something, so
+    sending work to somebody mid-task is a thing you can see yourself doing. */
+function dispatchTargets(rig) {
+  const s = dataOf("status", {}) || {};
+  const out = [];
+  for (const r of s.rigs || []) {
+    if (r.name !== rig) continue;
+    out.push([rig, `a fresh polecat in ${rig}`]);
+    for (const a of r.agents || []) if (a.address) out.push([a.address, targetLabel(a)]);
+  }
+  // A bead in the town's own database has no rig to spawn into, so the town agents are
+  // the whole list for it — and they can take a rig's bead too.
+  for (const a of s.agents || []) if (a.address) out.push([a.address, targetLabel(a)]);
+  return out.filter(([v], i, all) => all.findIndex(([x]) => x === v) === i);
+}
+const targetLabel = (a) => `${a.address} — ${String(a.role || "agent")}${
+  a.running ? (a.has_work ? ", holding work already" : ", idle") : ", not running"}`;
+
+/** One field of the plan, read-only, and drawn even when it is empty — an approval form
+    that quietly omitted the empty half of the plan would be hiding exactly the thing the
+    operator most needs to notice before pressing. */
+function planBlock(label, text) {
+  return `<div class="field">
+    <span class="field-name">${esc(label)}</span>
+    <div class="plan-text${text ? "" : " is-blank"}">${
+  esc(text || "Nothing is written in this field.")}</div>
+  </div>`;
+}
+
+/** The approval, as a form. Read the plan, pick where it goes, press once. */
+function dispatchForm(m, f) {
+  const b = m.byId.get(f.id) || {};
+  const list = dispatchTargets(f.rig);
+  const short = [...f.clipped];
+  return `
+    <h3 class="pane-title">Approve this plan and dispatch it</h3>
+    <div class="pane-id"><span class="mono">${esc(f.id)}</span> ${esc(b.title || "")}</div>
+    <p class="form-hint">Approving spawns an agent on this bead. It will work the plan
+      below, write code and open a merge request — so read it: this is exactly what is
+      being approved, it is recorded on the bead as approved, and the dispatch is refused
+      if any of it changes before you press.</p>
+    ${short.length ? `<p class="form-clipped">The console only has part of ${
+  esc(short.map((k) => FORM_LABEL[k] || k).join(" and "))} — the field is longer than one
+      response carries. What is below is that part, and that part is what gets recorded as
+      approved. Read the whole thing with <code class="mono">bd show ${esc(f.id)}</code>
+      before you press.</p>` : ""}
+    ${planBlock("Proposed plan", f.pin.design)}
+    ${planBlock("Acceptance criteria", f.pin.acceptance)}
+    ${planBlock("Gathered context", f.pin.desc)}
+    ${list.length
+    ? formField("target", "Send it to",
+      "A fresh polecat in the rig is the usual answer. Anything else is an agent that "
+      + "already exists, and one that is holding work says so.",
+      { options: list, value: f.fields.target })
+    : `<p class="form-note is-bad">The status read has not named anywhere to send
+        ${esc(f.rig)}'s work yet, so there is nothing to dispatch to. Try again once the
+        top of the page has loaded.</p>`}
+    ${refuseHtml(f)}
+    ${dispatchClash(f)}
+    ${formFoot(f, f.reasons.length ? "Dispatch anyway" : "Approve and dispatch")}`;
+}
+
+/** The server's reasons for wanting a second press, printed as it sent them. Never
+    pre-ticked, never remembered across forms: pressing through this is the confirmation,
+    and it is confirmation of these words rather than of a checkbox somebody has learned
+    the shape of. */
+function refuseHtml(f) {
+  if (!f.reasons.length) return "";
+  return `<div class="form-clash">
+    <h4>This needs saying twice</h4>
+    <ul class="refuse-list">${f.reasons.map((r) => `<li>${esc(r.text)}</li>`).join("")}</ul>
+    <p>Every sling spawns a fresh polecat rather than reusing an idle one, so doing it
+      again is another agent and another worktree. Press again if that is what you mean.</p>
+  </div>`;
+}
+
+/** A dispatch refused because the bead moved. Deliberately NOT the editor's clash box:
+    there is no "keep mine" here, because there is nothing of the operator's to keep — an
+    approval is a statement about what the bead said, and if the bead no longer says it
+    the only honest answer is to read the new one. So there is one way out, and it is to
+    go and look. */
+function dispatchClash(f) {
+  if (!f.conflicts.length) return "";
+  return `<div class="form-clash">
+    <h4>${f.conflicts.length === 1 ? "This bead changed" : "This bead changed in "
+  + `${f.conflicts.length} places`} while you were reading it</h4>
+    <p>Nothing was approved and nothing was dispatched. An approval is a statement about
+      what the plan said, so this one cannot stand — read what it says now and approve
+      that instead.</p>
+    ${f.conflicts.map((c) => `
+      <div class="clash">
+        <div class="clash-head"><span class="clash-field">${
+  esc(FORM_LABEL[c.field] || c.field)}</span></div>
+        <div class="clash-text">${esc(c.now || "(empty)")}</div>
+      </div>`).join("")}
+    <div class="form-actions">
+      <button type="button" class="btn" data-dispatch-reload="1">Read it again</button>
+    </div>
+  </div>`;
+}
+
 /** The id picker behind both `parent` and `target`. A datalist rather than a select: a
     rig has hundreds of beads, and typing three characters of an id beats scrolling. */
 function beadList(rows) {
@@ -2213,7 +2398,7 @@ function formFoot(f, label) {
     <div class="form-actions">
       <button type="button" class="btn" data-form-cancel="1">Cancel</button>
       <button type="button" class="btn primary" data-form-save="1"${f.busy ? " disabled" : ""}>${
-  esc(f.busy ? "Saving…" : label)}</button>
+  esc(f.busy ? (f.kind === "dispatch" ? "Dispatching…" : "Saving…") : label)}</button>
     </div>
   </div>`;
 }
@@ -2242,6 +2427,17 @@ async function submitForm() {
     if (!f.fields.target.trim()) return void formFails("Name the other bead.");
     body = { rig: f.rig, id: f.id, kind: f.fields.kind, target: f.fields.target.trim(),
       base: { parent: f.base.parent } };
+  } else if (f.kind === "dispatch") {
+    if (!CAN_DISPATCH) return void formFails("This console does not dispatch.");
+    if (!f.fields.target) return void formFails("Say where this should go.");
+    // `confirm` is exactly "the operator has now read the refusal below and pressed
+    // again". It is set from what the server already objected to, so it can never say
+    // yes to something nobody was warned about, and it is cleared on every new refusal.
+    // The KEYS of the objections that are on screen right now — not a bare yes. The
+    // server proceeds only over objections it can see were shown, so one that appeared
+    // between the two presses stops this press too, which is what a confirmation is for.
+    body = { rig: f.rig, id: f.id, target: f.fields.target, base: f.pin,
+      confirm: f.reasons.map((r) => r.key) };
   } else {
     const fields = touched(f);
     if (!Object.keys(fields).length) return void formSays("Nothing has changed — nothing to save.");
@@ -2258,7 +2454,12 @@ async function submitForm() {
 async function postWrite(path, body, f) {
   f.busy = true;
   f.err = "";
-  f.msg = "Saving…";
+  // A dispatch spawns a polecat and boots a rig, so this is the one write here that can
+  // sit for the better part of a minute. Saying so is the difference between waiting and
+  // pressing again — and pressing again is a second agent.
+  f.msg = f.kind === "dispatch"
+    ? "Dispatching… spawning an agent takes a moment. Do not press again."
+    : "Saving…";
   paintForm();
   let j = null;
   try {
@@ -2271,7 +2472,14 @@ async function postWrite(path, body, f) {
   }
   f.busy = false;
   if (!j || !j.ok) {
+    // Both are taken from THIS response rather than accumulated, so a refusal that has
+    // been pressed through cannot leave `confirm` set for a later, different objection.
     f.conflicts = (j && j.conflicts) || [];
+    f.reasons = (j && j.reasons) || [];
+    // A refused dispatch comes back with the whole bead as the store has it — see
+    // dispatch.py. Kept so "Read it again" is a re-read and not a request for one.
+    f.now = (j && j.now) || null;
+    f.nowClipped = (j && j.clipped) || [];
     return void formFails((j && j.error) || "The write failed and said nothing about why.");
   }
   // Landed. Take the store's answer as the new truth for the pane, close the form, and
@@ -2305,6 +2513,33 @@ function resolveClash(choice, i) {
   f.err = "";
   paintForm();
   $("#board-pane [data-clash]")?.focus();
+}
+
+/** A refused approval, taken up again on the plan the store actually holds.
+
+    The bead does not have to be fetched for this: the refusal carried every pinned field
+    as `bd` had it at the moment of the check, which is fresher than the board behind this
+    pane (a backlog read runs every three minutes). So this re-seeds the form and the
+    pane's own prose from that one answer — the plan is redrawn, the pin moves with it,
+    and the next press approves what is now on screen. Nothing is dispatched here; the
+    operator still has to read it and press. */
+function rereadForApproval() {
+  const f = state.form;
+  if (!f || f.kind !== "dispatch" || !f.now) return;
+  f.pin = { ...f.now };
+  f.clipped = new Set(f.nowClipped || []);
+  f.conflicts = [];
+  f.reasons = [];
+  f.err = "";
+  f.msg = "This is what the bead says now. Read it, then approve it.";
+  // The pane behind the form shows the same prose from the same fields, so it moves too:
+  // one copy of the plan on this page rather than two that can disagree about it.
+  if (state.selData && state.selData.key === selKey()) {
+    state.selData = { key: selKey(), data: { ...(state.selData.data || {}),
+      ...Object.fromEntries(FORM_PROSE.map(([k]) => [k, f.now[k] || ""])) } };
+  }
+  paintForm();
+  $("#form-note")?.focus();
 }
 
 function formFails(reason) {
@@ -2371,6 +2606,14 @@ $("#board-new").onclick = () => {
 
 $("#board-q").oninput = (e) => { state.boardq = e.target.value.toLowerCase(); renderBoard(); };
 
+// The foot of every page says what this console can write, so it has to say this too —
+// a console that can start an agent is a different thing from one that cannot, and the
+// operator should not have to open a tab to find out which one they are looking at.
+if (CAN_DISPATCH) {
+  $("#write-note").textContent = "read-only except mail, the Board tab's bead editor, "
+    + "and approve-and-dispatch (this machine only) — no delete";
+}
+
 // One delegated listener over the whole tab: the board and the pane are both replaced
 // wholesale on every render, and the pane's own links are cards by another name.
 $("#view-board").addEventListener("click", (ev) => {
@@ -2381,6 +2624,7 @@ $("#view-board").addEventListener("click", (ev) => {
   if (open) return void openForm(open.dataset.form);
   if (ev.target.closest("[data-form-cancel]")) return void closeForm();
   if (ev.target.closest("[data-form-save]")) return void submitForm();
+  if (ev.target.closest("[data-dispatch-reload]")) return void rereadForApproval();
   const clash = ev.target.closest("[data-clash]");
   if (clash) return void resolveClash(clash.dataset.clash, Number(clash.dataset.clashI));
   const card = ev.target.closest("[data-card]");

@@ -841,6 +841,36 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
   border-radius: var(--radius-sm);
 }
 
+/* ---------- approving a plan ----------
+   The one control on this page that starts an agent rather than describing one. It is
+   marked out by colour AND by sitting last AND by the word "dispatch" on it — never by
+   colour alone, which is worth nothing on a monochrome screen and less to a screen
+   reader. Green rather than red: this is a deliberate go, not a warning. */
+.btn.small.go {
+  border-color: color-mix(in srgb, var(--green) 55%, transparent);
+  color: var(--green);
+}
+.btn.small.go:hover { background: color-mix(in srgb, var(--green) 14%, transparent); }
+/* The plan, on the same screen as the button that approves it. Read-only and not a
+   textarea: an approval is a statement about what the bead SAYS, so this may not be a
+   box somebody can type a different plan into. It scrolls at a height that shows a real
+   paragraph — the whole point is that it gets read, so it may not be a two-line peephole
+   onto eight hundred words. */
+.plan-text {
+  max-height: 260px; overflow: auto; padding: 9px 11px;
+  white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12.5px; line-height: 1.55;
+  background: var(--surface-2); border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+}
+/* An empty half of a plan is drawn rather than dropped: "nothing is written here" is the
+   most important thing this form can tell somebody about to start an agent. */
+.plan-text.is-blank { color: var(--muted); font-style: italic; }
+.refuse-list { margin: 7px 0 0 18px; font-size: 12.5px; line-height: 1.55; }
+.refuse-list li { margin-top: 4px; }
+/* The way out of a refused approval sits inside the refusal, not down in the foot beside
+   Cancel — it belongs to the thing it answers. */
+.form-clash .form-actions { margin: 10px 0 0; }
+
 /* ---------- responsive ---------- */
 @media (max-width: 1080px) {
   .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -925,4 +955,8 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
   .form-actions { flex: 1 1 100%; margin-left: 0; }
   .form-actions .btn { flex: 1; justify-content: center; }
   .clash-text { max-height: 160px; }
+  /* Taller than the clash box, not shorter: this is the plan somebody is about to sign
+     off on, and a phone is where they are most likely to be doing it. */
+  .plan-text { max-height: 220px; }
+  .form-clash .form-actions { flex-basis: auto; }
 }

@@ -21,6 +21,7 @@ from urllib.parse import urlparse, parse_qs
 
 import backlog
 import beads
+import dispatch
 import edit
 import flight
 import models
@@ -31,6 +32,14 @@ ENV = dict(os.environ, PATH="/opt/homebrew/bin:/usr/local/bin:" + os.environ.get
 TOWN = os.path.expanduser("~/gt")
 TOKEN = None
 DEMO = False
+# The addresses that mean "nobody but this machine". Everything else is a LAN binding,
+# where the only thing standing in front of the console is the token below — a speed
+# bump, as the README says. LOCAL is what decides whether this console can dispatch at
+# all; see dispatch.py, WRITE_ACTIONS and _page() for the three places it is enforced.
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
+# Fails closed: nothing dispatches until a bind address has actually been read and found
+# to be the loopback. The startup block below is the only thing that ever sets it true.
+LOCAL = False
 
 
 def _status():
@@ -220,7 +229,22 @@ def snapshot():
     return {"at": now, "panels": panels}
 
 
-def send_mail(body):
+def _page(raw):
+    """index.html with the one thing about it that is not static filled in.
+
+    The dispatch affordance has to be ABSENT off localhost, not disabled (gc-dzd), and
+    "absent" has to be checkable by fetching the page rather than by looking at it — a
+    control that a script decides not to draw is invisible to a reader of the HTML
+    either way, so a page that never says which console this is cannot be inspected at
+    all. So the served document carries the answer, and `curl -s / | grep gt-dispatch`
+    is a real test with two possible results.
+
+    One named marker, substituted once. That is not a template engine and must not grow
+    into one: a second marker here is a sign that something belongs in a read instead."""
+    return raw.replace(b"__GT_DISPATCH__", b"on" if LOCAL else b"off")
+
+
+def send_mail(body, _client):
     if DEMO:
         return {"ok": False, "error": "demo mode — nothing is actually sent"}, 400
     to = (body.get("to") or "").strip()
@@ -240,6 +264,36 @@ def send_mail(body):
         return {"ok": False, "error": reason or "send failed"}, 502
     mark_due("mail")
     return {"ok": True, "detail": (p.stdout or "sent").strip()}, 200
+
+
+def dispatch_bead(body, client):
+    """Approve a plan and put an agent on it — the one write that starts something. Same
+    seam as write_bead below and for the same reason: dispatch.py owns every judgement
+    (what may be pinned, what a repeat is, what `gt sling` is asked), backlog.py owns the
+    shape of the cache, and this folds one into the other.
+
+    Two things a handler cannot delegate. The client address is read off the connection
+    rather than the body, because it goes into the audit record and a body is whatever
+    the sender typed. And the `status` panel goes in because that is what bounds the
+    targets — an agent this console has never been told about is not somewhere it will
+    hand an autonomous worker to.
+
+    This blocks for as long as spawning a polecat takes. That is the licence a POST has
+    and a read never does; see CLAUDE.md."""
+    with _guard:
+        panel = _cache["backlog"]["data"]
+    repos = [] if DEMO else beads.repos(_status(), TOWN)
+    payload, code = dispatch.apply(body, repos, panel, _status(), TOWN, DEMO, client)
+    if code != 200:
+        return payload, code
+    patched = backlog.apply_write(panel, payload["rig"], payload["bead"], payload["prose"])
+    with _guard:
+        if _cache["backlog"]["data"] is panel:
+            _cache["backlog"]["data"] = patched
+    # A sling moves the bead onto a hook and wakes an agent, so three panels are now
+    # wrong at once — what is planned, what is in flight, and who is holding it.
+    mark_due("backlog", "flight", "status")
+    return payload, code
 
 
 def write_bead(action, body):
@@ -275,14 +329,18 @@ def write_bead(action, body):
 
 # The allowlist. Everything else that arrives at do_POST is a 404, and there is no shell
 # passthrough behind any of these — each one is a fixed argv assembled from validated
-# fields. Note what is NOT here: no delete, no close, no dispatch. Removing a bead and
-# putting an agent on one are separate decisions with separate beads (gc-dzd), not
-# things that arrive as part of an editor.
+# fields. Note what is still NOT here: no delete and no close. Removing a bead is a
+# different risk class, and closing one is a claim about work this console cannot check.
+#
+# A FIFTH ENTRY, "dispatch", IS ADDED BELOW AND ONLY ON THE LOOPBACK. It is not in this
+# literal because it must be absent rather than refused when the console is reachable
+# from the LAN — off localhost the endpoint 404s exactly like a route nobody ever wrote.
+# See dispatch.py for why a token is not enough in front of it.
 WRITE_ACTIONS = {
     "mail": send_mail,
-    "bead-new": lambda body: write_bead("new", body),
-    "bead-edit": lambda body: write_bead("edit", body),
-    "bead-link": lambda body: write_bead("link", body),
+    "bead-new": lambda body, _client: write_bead("new", body),
+    "bead-edit": lambda body, _client: write_bead("edit", body),
+    "bead-link": lambda body, _client: write_bead("link", body),
 }
 
 
@@ -318,6 +376,8 @@ class Handler(BaseHTTPRequestHandler):
         ctype = mimetypes.guess_type(full)[0] or "application/octet-stream"
         with open(full, "rb") as fh:
             raw = fh.read()
+        if full == os.path.join(STATIC, "index.html"):
+            raw = _page(raw)
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(raw)))
@@ -381,7 +441,9 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n) or b"{}")
         except (ValueError, json.JSONDecodeError):
             return self._json({"ok": False, "error": "bad request body"}, 400)
-        payload, code = WRITE_ACTIONS[action](body)
+        # The address comes off the connection, never out of the body: it lands in an
+        # audit record, and a record of what the sender said about itself is not one.
+        payload, code = WRITE_ACTIONS[action](body, self.client_address[0])
         self._json(payload, code)
 
 
@@ -398,8 +460,16 @@ if __name__ == "__main__":
     TOWN = args.town
     TOKEN = args.token
     DEMO = args.demo
-    if TOKEN is None and args.bind not in ("127.0.0.1", "localhost") and not args.no_auth:
+    LOCAL = args.bind in LOOPBACK
+    if TOKEN is None and not LOCAL and not args.no_auth:
         TOKEN = secrets.token_urlsafe(16)
+    if LOCAL:
+        # The one write that starts an agent, and the only thing in this file that is
+        # conditional on where the console is bound. It is added here rather than sitting
+        # in WRITE_ACTIONS behind an `if` inside the handler, so that off localhost there
+        # is nothing to guard: the action does not exist, the POST is a 404, and _page()
+        # tells the front end not to draw the button. Three places, one condition.
+        WRITE_ACTIONS["dispatch"] = dispatch_bead
 
     if DEMO:
         import demo
@@ -421,4 +491,9 @@ if __name__ == "__main__":
     print(f"  http://{host}:{args.port}/" + (f"?t={TOKEN}" if TOKEN else ""))
     if TOKEN:
         print("  token required — the link above carries it and sets a cookie")
+    # Said out loud at startup, because it is the difference between a console that can
+    # start an autonomous agent and one that cannot, and nobody should have to infer it
+    # from a button being missing.
+    print("  approve-and-dispatch: " + ("ON — bound to the loopback" if LOCAL else
+          f"OFF — bound to {args.bind}, which is not the loopback"))
     ThreadingHTTPServer((args.bind, args.port), Handler).serve_forever()

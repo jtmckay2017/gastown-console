@@ -84,12 +84,12 @@ def apply(action, body, repos, panel, demo):
     rig = str(body.get("rig") or "").strip()
     block = next((r for r in ((panel or {}).get("rigs") or []) if r.get("rig") == rig), None)
     if block is None:
-        return _no(f"{rig or '(none)'} is not a rig the console has read a backlog for", 400)
+        return no(f"{rig or '(none)'} is not a rig the console has read a backlog for", 400)
     repo = dict(repos).get(rig)
     if repo is None and not demo:
-        return _no(f"no beads repo for {rig} — the console will not guess at one", 400)
+        return no(f"no beads repo for {rig} — the console will not guess at one", 400)
     if action not in ACTIONS:
-        return _no(f"{action} is not a write this console does", 404)
+        return no(f"{action} is not a write this console does", 404)
     return {"new": _new, "edit": _edit, "link": _link}[action](body, rig, repo, block, demo)
 
 
@@ -100,12 +100,12 @@ def _new(body, rig, repo, block, demo):
     a parent, if one is named, has to be a bead this rig actually has."""
     want, err = _clean(body)
     if err:
-        return _no(err, 400)
+        return no(err, 400)
     if not want.get("title"):
-        return _no("a new bead needs a title", 400)
+        return no("a new bead needs a title", 400)
     parent = str(body.get("parent") or "").strip()
-    if parent and not _carried(block, parent):
-        return _no(f"{parent} is not one of the beads this rig's backlog carried", 400)
+    if parent and not carried(block, parent):
+        return no(f"{parent} is not one of the beads this rig's backlog carried", 400)
 
     if demo:
         ident = _demo_id(block)
@@ -113,7 +113,7 @@ def _new(body, rig, repo, block, demo):
                "parent": parent, **{FIELDS[n]: v for n, v in want.items()}}
         row.setdefault("issue_type", "task")
         row.setdefault("priority", "2")
-        return _done(rig, ident, row, _values(row), f"created {ident}")
+        return done(rig, ident, row, values(row), f"created {ident}")
 
     argv = ["create", "--title", want["title"],
             "--type", want.get("type") or "task", "--priority", want.get("priority") or "2"]
@@ -124,12 +124,12 @@ def _new(body, rig, repo, block, demo):
         argv += ["--parent", parent]
     made, err = beads.write(repo, argv)
     if err:
-        return _no(f"bd would not create the bead: {err}", 502)
+        return no(f"bd would not create the bead: {err}", 502)
     ident = _new_id(made)
     if not ident:
         # It wrote something and the console cannot say what. That is not a success, and
         # the operator has to go and look rather than be told it worked.
-        return _no("bd created a bead but did not say which — check `bd list` in " + rig, 502)
+        return no("bd created a bead but did not say which — check `bd list` in " + rig, 502)
     return _reread(rig, ident, repo, f"created {ident}")
 
 
@@ -137,34 +137,34 @@ def _edit(body, rig, repo, block, demo):
     """Rewrite fields on one bead, if and only if nobody else has moved them since the
     console drew them. Everything before the write is that check."""
     ident = str(body.get("id") or "").strip()
-    if not _carried(block, ident):
-        return _no(f"{ident or '(none)'} is not one of the beads this rig's backlog "
+    if not carried(block, ident):
+        return no(f"{ident or '(none)'} is not one of the beads this rig's backlog "
                    "carried — reload the board and try again", 404)
     want, err = _clean(body)
     if err:
-        return _no(err, 400)
+        return no(err, 400)
     if not want:
-        return _no("no fields to write", 400)
+        return no("no fields to write", 400)
     if "title" in want and not want["title"]:
-        return _no("a bead has to keep a title", 400)
+        return no("a bead has to keep a title", 400)
     base = body.get("base")
     if not isinstance(base, dict):
-        return _no("the request did not say what the console had — refusing to "
+        return no("the request did not say what the console had — refusing to "
                    "overwrite a bead blind", 400)
     blind = sorted(n for n in want if n not in base)
     if blind:
-        return _no("the request did not say what the console had for "
+        return no("the request did not say what the console had for "
                    f"{', '.join(blind)} — refusing to overwrite a field blind", 400)
 
     now, row, err = _read(repo, rig, ident, demo, block)
     if err:
-        return _no(f"could not re-read {ident} before writing it: {err}", 502)
+        return no(f"could not re-read {ident} before writing it: {err}", 502)
     huge = sorted(n for n in want if len(now.get(n) or "") > MAX)
     if huge:
-        return _no(f"{', '.join(huge)} is longer than the console can carry, so it only "
+        return no(f"{', '.join(huge)} is longer than the console can carry, so it only "
                    f"has part of it — edit that field with `bd update {ident}`", 409)
-    clashes = [{"field": n, "was": _norm(base.get(n), n), "now": now[n]}
-               for n in sorted(want) if _norm(base.get(n), n) != now[n]]
+    clashes = [{"field": n, "was": norm(base.get(n), n), "now": now[n]}
+               for n in sorted(want) if norm(base.get(n), n) != now[n]]
     if clashes:
         return ({"ok": False, "conflict": True, "rig": rig, "id": ident, "now": now,
                  "conflicts": clashes,
@@ -175,16 +175,16 @@ def _edit(body, rig, repo, block, demo):
 
     changed = {n: v for n, v in want.items() if v != now[n]}
     if not changed:
-        return _done(rig, ident, row, now, "nothing to save — the bead already says that")
+        return done(rig, ident, row, now, "nothing to save — the bead already says that")
     if demo:
         row = {**row, **{FIELDS[n]: v for n, v in changed.items()}, "updated_at": _now()}
-        return _done(rig, ident, row, _values(row), _saved(changed))
+        return done(rig, ident, row, values(row), _saved(changed))
     argv = ["update", ident]
     for name, value in changed.items():
         argv += [FLAGS[FIELDS[name]], value]
     _, err = beads.write(repo, argv)
     if err:
-        return _no(f"bd refused the edit: {err}", 502)
+        return no(f"bd refused the edit: {err}", 502)
     return _reread(rig, ident, repo, _saved(changed))
 
 
@@ -200,17 +200,17 @@ def _link(body, rig, repo, block, demo):
     target = str(body.get("target") or "").strip()
     kind = str(body.get("kind") or "").strip()
     if kind not in ("parent", "blocks"):
-        return _no(f"{kind or '(none)'} is not a link this console makes", 400)
+        return no(f"{kind or '(none)'} is not a link this console makes", 400)
     for who, what in (("bead", ident), ("other bead", target)):
-        if not _carried(block, what):
-            return _no(f"the {who} ({what or 'none'}) is not one of the beads this rig's "
+        if not carried(block, what):
+            return no(f"the {who} ({what or 'none'}) is not one of the beads this rig's "
                        "backlog carried", 400)
     if ident == target:
-        return _no("a bead cannot be linked to itself", 400)
+        return no("a bead cannot be linked to itself", 400)
 
     now, row, err = _read(repo, rig, ident, demo, block)
     if err:
-        return _no(f"could not re-read {ident} before linking it: {err}", 502)
+        return no(f"could not re-read {ident} before linking it: {err}", 502)
     if kind == "parent":
         had = str(row.get("parent") or "").strip()
         base = str((body.get("base") or {}).get("parent") or "").strip()
@@ -220,15 +220,15 @@ def _link(body, rig, repo, block, demo):
                      "error": f"{ident} was moved under {had or 'no epic'} since the "
                               "console read it. Nothing was changed."}, 409)
         if had == target:
-            return _done(rig, ident, row, now, f"{ident} is already under {target}")
+            return done(rig, ident, row, now, f"{ident} is already under {target}")
         argv, detail = ["update", ident, "--parent", target], f"{ident} moved under {target}"
         extra = {"parent": target}
     else:
         # `bd dep add <blocked> <blocker>` — the edge is stored on the blocked bead, the
         # same direction backlog._blockers() reads it back out in.
-        blocked_by = list(_carried(block, ident).get("blocked_by") or [])
+        blocked_by = list(carried(block, ident).get("blocked_by") or [])
         if target in blocked_by:
-            return _done(rig, ident, row, now, f"{ident} already waits on {target}")
+            return done(rig, ident, row, now, f"{ident} already waits on {target}")
         argv = ["dep", "add", ident, target]
         detail = f"{ident} now waits on {target}"
         extra = {"blocked_by": sorted({*blocked_by, target})}
@@ -236,9 +236,9 @@ def _link(body, rig, repo, block, demo):
     if not demo:
         _, err = beads.write(repo, argv)
         if err:
-            return _no(f"bd refused the link: {err}", 502)
+            return no(f"bd refused the link: {err}", 502)
         return _reread(rig, ident, repo, detail, extra)
-    return _done(rig, ident, {**row, "updated_at": _now()}, now, detail, extra)
+    return done(rig, ident, {**row, "updated_at": _now()}, now, detail, extra)
 
 
 # ---------------------------------------------------------------- reading and shaping
@@ -253,15 +253,15 @@ def _read(repo, rig, ident, demo, block):
     hold every field this module writes."""
     if not demo:
         row, err = beads.show(repo, ident)
-        return (None, None, err) if err else (_values(row), row, None)
-    carried = _carried(block, ident)
-    if carried is None:
+        return (None, None, err) if err else (values(row), row, None)
+    have = carried(block, ident)
+    if have is None:
         return None, None, f"{ident} is not one of the beads this rig's backlog carried"
     fields, err = backlog.prose(rig, ident)
     if err:
         return None, None, err
-    row = {**carried, **{FIELDS[n]: v for n, v in (fields or {}).items() if n in FIELDS}}
-    return _values(row), row, None
+    row = {**have, **{FIELDS[n]: v for n, v in (fields or {}).items() if n in FIELDS}}
+    return values(row), row, None
 
 
 def _reread(rig, ident, repo, detail, extra=None):
@@ -270,12 +270,12 @@ def _reread(rig, ident, repo, detail, extra=None):
     show up as the half it applied rather than as the whole thing the operator typed."""
     row, err = beads.show(repo, ident)
     if err:
-        return _no(f"the write landed but the console could not read {ident} back: {err} "
+        return no(f"the write landed but the console could not read {ident} back: {err} "
                    "— refresh before editing it again", 502)
-    return _done(rig, ident, row, _values(row), detail, extra)
+    return done(rig, ident, row, values(row), detail, extra)
 
 
-def _done(rig, ident, row, now, detail, extra=None):
+def done(rig, ident, row, now, detail, extra=None):
     """The success payload, in the three shapes its three readers need: `bead` in the
     panel's shape for the cache patch, `prose` in the pane's shape, and `base` — the
     values the store now holds, which is the editor's next baseline. Handing that back
@@ -299,17 +299,17 @@ def _done(rig, ident, row, now, detail, extra=None):
         "plan": True if (now["design"] or now["acceptance"]) else "",
         **(extra or {}),
     }
-    prose = {name: _norm(row.get(field), name) for name, field in backlog.PROSE}
+    prose = {name: norm(row.get(field), name) for name, field in backlog.PROSE}
     return ({"ok": True, "detail": detail, "rig": rig, "id": ident,
              "bead": bead, "prose": {k: v for k, v in prose.items() if v}, "base": now}, 200)
 
 
-def _values(row):
+def values(row):
     """One bead's writable fields under the console's names for them."""
-    return {name: _norm(row.get(field), name) for name, field in FIELDS.items()}
+    return {name: norm(row.get(field), name) for name, field in FIELDS.items()}
 
 
-def _norm(value, name=""):
+def norm(value, name=""):
     """One field as a comparable string. Every comparison in this module runs through
     here, so the operator's "2" and bd's 2 are the same priority and trailing whitespace
     is never a conflict."""
@@ -335,7 +335,7 @@ def _clean(body):
     for name in sorted(raw):
         if name not in FIELDS:
             return None, f"{name} is not a field the console writes"
-        text = _norm(raw[name], name)
+        text = norm(raw[name], name)
         if len(text) > MAX:
             return None, f"{name} is longer than the {MAX} characters the console carries"
         if name == "priority":
@@ -355,7 +355,7 @@ def _int(text):
         return None
 
 
-def _carried(block, ident):
+def carried(block, ident):
     """The bead as the panel carries it, or None. Every write checks this first: it is
     what bounds the write surface to beads the console has actually drawn."""
     return next((b for b in (block.get("beads") or []) if b.get("id") == ident), None) \
@@ -391,5 +391,5 @@ def _now():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def _no(reason, code):
+def no(reason, code):
     return {"ok": False, "error": reason}, code

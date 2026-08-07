@@ -6,6 +6,13 @@
 <meta name="color-scheme" content="dark light">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>Gas Town · Admin</title>
+<!-- The one thing on this page the server fills in (server.py `_page()`), and the only
+     reason it does: approving a plan starts an autonomous agent, so that control has to
+     be ABSENT rather than disabled whenever the console is reachable from anything but
+     this machine — and "absent" has to be checkable by fetching the page, not by
+     squinting at it. `curl -s http://…/ | grep gt-dispatch` answers on or off. Off, the
+     button is never built and POST /api/dispatch is a 404. See dispatch.py. -->
+<meta name="gt-dispatch" content="__GT_DISPATCH__">
 <link rel="stylesheet" href="/static/app.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>⛽</text></svg>">
 </head>
@@ -104,8 +111,11 @@
        plan and acceptance criteria, which is the argument behind the card rather than
        a longer version of its title.
        It is also the one place this console writes to a plan: the pane can draft a
-       bead, edit one, link two, and mail an agent to go and revise it. Nothing here
-       deletes, closes or dispatches anything — see edit.py. -->
+       bead, edit one, link two, and mail an agent to go and revise it — see edit.py.
+       On a console bound to the loopback it can also approve a plan and put an agent
+       on it, which is the one write here that starts something rather than describing
+       it; that control is absent entirely anywhere else (dispatch.py). Nothing on this
+       tab deletes or closes anything, anywhere. -->
   <section class="view" id="view-board">
     <div class="toolbar">
       <div class="search">
@@ -241,7 +251,7 @@
 <footer class="statusbar">
   <span id="updated" class="muted">loading…</span>
   <span class="muted sep">·</span>
-  <span class="muted">read-only except mail and the Board tab's bead editor — no delete, no dispatch</span>
+  <span class="muted" id="write-note">read-only except mail and the Board tab's bead editor — no delete</span>
 </footer>
 
 <script src="/static/app.js"></script>
