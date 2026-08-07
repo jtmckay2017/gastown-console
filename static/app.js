@@ -370,9 +370,14 @@ function renderKpis(s) {
   const mail = dataOf("mail", []) || [];
   const unread = mail.filter((m) => !pick(m, ["read", "is_read"], false)).length;
   // Who is working, then what they are working on — the second half of the question
-  // the first half raises. Both are counts of the same town, from different reads.
+  // the first half raises. Both are counts of the same town, from different reads, and
+  // both are derived from the panes: "moving" used to mean "not blocked", which counted
+  // a bead nobody had started as moving (gc-sa1). Now it means an agent is on it.
   const inflight = dataOf("flight", []) || [];
-  const blocked = inflight.filter((b) => flightState(b).key === "blocked").length;
+  const lw = { ix: agentIndex(agents), ctx };
+  const lanes = inflight.map((b) => flightState(lw, b).key);
+  const blocked = lanes.filter((k) => k === "blocked").length;
+  const worked = lanes.filter((k) => k === "working").length;
   const convoys = (dataOf("convoys", []) || [])
     .filter((c) => String(c.status || "").toLowerCase() !== "closed").length;
   // And the third of that pair: what is scheduled behind it. A queue that has stalled
@@ -385,7 +390,7 @@ function renderKpis(s) {
     { v: `${busy}/${agents.length}`, l: "Agents working", cls: busy ? "good" : "",
       sub: `${up} up${stuck ? ` · ${stuck} with input staged` : ""}` },
     { v: inflight.length, l: "Work in flight", cls: inflight.length ? "good" : "",
-      sub: `${inflight.length - blocked} moving${blocked ? ` · ${blocked} blocked` : ""}`
+      sub: `${worked} being worked${blocked ? ` · ${blocked} blocked` : ""}`
         + `${convoys ? ` · ${convoys} convoy${convoys === 1 ? "" : "s"}` : ""}` },
     { v: scheduled, l: "Scheduled",
       cls: q?.state === "no-daemon" ? "alert" : q?.state === "dispatching" ? "good" : "",
@@ -634,17 +639,85 @@ function agentFor(ix, assignee) {
   return null;
 }
 
-/* The stored statuses that are neither open nor closed (see flight.py). `hooked` is
-   the one that matters most and the one nobody expects: it is what `gt sling` sets,
-   so it is where nearly all live work sits. Order is reading order — what is moving
-   first, what is stuck last, where it cannot be missed at the end of a short list. */
+/* ---- which beads are actually being worked (gc-sa1) ----
+
+   A BEAD'S STATUS DOES NOT SAY WHETHER ANYBODY IS WORKING IT, and for a long time this
+   console drew as if it did. `gt sling` writes `hooked`; the one thing that would write
+   `in_progress` afterwards refuses to. polecat_spawn.go calls SetState(StateWorking) the
+   moment a session starts, and manager.go's SetState skips the update when the bead is
+   already `hooked` — which, on the sling path, it always is. That skip is deliberate
+   (gt-zecmc: changing status during spawn conflicted with `gt done`) and the half that
+   was meant to compensate — the polecat claiming its own work in `gt prime` — was never
+   built. So `in_progress` is reached only when an agent happens to run `bd update` by
+   hand, and a lane keyed on status alone reads as an empty town with three polecats
+   mid-task. The operator found it by looking at the board and an agent at once.
+
+   It is this town's most expensive failure class again — one fact, three disagreeing
+   sources: the bead says hooked, `gt` says working, the pane says thinking (hq-m2p,
+   hq-r1e). The console cannot fix the store, and it does not get to invent a status.
+   What it has is EVIDENCE, and it already reads it: the agent holding the bead has a
+   turn in flight on its own screen (the `panes` read, gc-vy3).
+
+   So a bead is drawn in the lane its stored status names, with exactly one substitution:
+   a bead an agent has taken (`hooked`) whose holder is mid-turn is drawn as being worked,
+   and whatever draws it says which status the store still holds. Nothing else moves.
+   `blocked` outranks liveness, because a blocked bead somebody is poking at is still
+   blocked and that is the cell a review needs to find. `open` never moves either: an
+   agent being busy is no evidence about a bead nobody took. And the substitution reaches
+   only as far as the evidence does — an agent mid-turn holding three hooked beads
+   promotes all three, because a pane says a turn is in flight and never says about what.
+
+   Both tabs derive it here, once. Two places deciding what "being worked" means is two
+   places to disagree about it, which is the bug this section exists to answer. */
+
+/** The agents and the pane map every liveness question is answered against — the same
+    two panels the Agents tab reads, so a bead and the agent holding it can never be
+    drawn from different evidence. Cheap enough to build per render. */
+const liveWork = () => ({ ix: agentIndex(allAgents(dataOf("status", {}) || {})), ctx: agentCtx() });
+
+/** Who holds a bead and what their screen says. null when nothing holds it; an entry
+    with agent:null when the assignee matches no agent the console can see, which is a
+    fact worth keeping rather than flattening into "nobody". */
+function holder(lw, b) {
+  if (!String(b.assignee || "").trim()) return null;
+  const agent = agentFor(lw.ix, b.assignee);
+  if (!agent) return { agent: null, st: null, note: "", live: false };
+  const st = agentState(agent, lw.ctx);
+  return { agent, st, note: agentNote(agent, lw.ctx), live: st.key === "working" };
+}
+
+/** The one line a row or a card carries about its holder: that agent's own screen, or
+    that its assignee matches no agent at all — a gap there would read as "nobody is on
+    it", which is the opposite of what an assignee means. */
+const holderLine = (h) => (!h ? "" : !h.agent ? "no live session for this assignee"
+  : `${h.st.label.toLowerCase()}${h.note ? ` · ${h.note}` : ""}`);
+
+/** The store's own word for a bead, spelled for reading. Every surface that draws a
+    derived lane prints this beside it — the console is allowed to say what it thinks is
+    happening, and never allowed to stop saying what the store holds. */
+const statusWord = (b) => String(b.status || "").toLowerCase().replace(/_/g, " ") || "?";
+
+/** The lane a bead is drawn in: its stored status, or `working` where the evidence above
+    says an agent is on it. Stored `in_progress` folds into the same lane because it is
+    the same claim, made by the store rather than by the screen. */
+function workLane(lw, b) {
+  const st = String(b.status || "").toLowerCase();
+  if (st === "in_progress") return "working";
+  if (st !== "hooked") return st || "?";
+  const h = holder(lw, b);
+  return h && h.live ? "working" : "hooked";
+}
+
+/* The lanes of the Work tab's list, in reading order — what is moving first, what is
+   stuck last, where it cannot be missed at the end of a short list. Same keys as the
+   board's columns, from the same workLane(), for the same reason. */
 const FLIGHT_STATES = [
-  { key: "in_progress", label: "In progress", hint: "claimed by an agent", badge: "ok" },
-  { key: "hooked",      label: "On a hook",   hint: "slung to an agent — this town's usual shape", badge: "ok" },
-  { key: "blocked",     label: "Blocked",     hint: "stalled behind something else", badge: "bad" },
-  { key: "other",       label: "In flight",   hint: "neither open nor closed",   badge: "" },
+  { key: "working", label: "Being worked", hint: "an agent has a turn in flight on it", badge: "ok" },
+  { key: "hooked",  label: "On a hook",    hint: "slung to an agent, whose screen is quiet", badge: "ok" },
+  { key: "blocked", label: "Blocked",      hint: "stalled behind something else", badge: "bad" },
+  { key: "other",   label: "In flight",    hint: "neither open nor closed",   badge: "" },
 ];
-const flightState = (b) => FLIGHT_STATES.find((x) => x.key === String(b.status || "").toLowerCase())
+const flightState = (lw, b) => FLIGHT_STATES.find((x) => x.key === workLane(lw, b))
   || FLIGHT_STATES[FLIGHT_STATES.length - 1];
 
 /** The one filter bar over the tab. Applied to in-flight beads and ready issues
@@ -662,7 +735,7 @@ $("#work-q").oninput = (e) => { state.q = e.target.value.toLowerCase(); renderWo
 function renderWorkView() {
   const s = dataOf("status", {}) || {};
   renderWorkChips();
-  renderFlight(s);
+  renderFlight();
   renderQueue();
   renderConvoys(s);
   renderReady();
@@ -687,24 +760,23 @@ function renderWorkChips() {
 }
 
 /** One bead in flight: what it is, who has it, and — where the agent can be paired
-    with a live pane — what that agent's screen says it is doing about it right now. */
-function flightRow(b, ix, ctx) {
-  const st = flightState(b);
-  const agent = agentFor(ix, b.assignee);
-  const ast = agent ? agentState(agent, ctx) : null;
-  const note = agent ? agentNote(agent, ctx) : "";
+    with a live pane — what that agent's screen says it is doing about it right now.
+    The badge is the lane the row was grouped into, which is derived; the stored status
+    sits in the sub beside the id. The row is where the two are seen to differ (gc-sa1),
+    so it prints both rather than choosing. */
+function flightRow(b, lw) {
+  const st = flightState(lw, b);
+  const h = holder(lw, b);
   // The live line is the point of the row: the agent's own screen, one line of it.
-  // When the assignee matches no agent at all, say so — a gap there would read as
-  // "nobody is on it", which is the opposite of what an assignee means.
-  const live = ast ? `${ast.label.toLowerCase()}${note ? ` · ${note}` : ""}`
-    : b.assignee ? "no live session for this assignee" : "";
+  const live = holderLine(h);
   return `
-    <div class="row row-card flight ${ast && ast.key === "working" ? "is-live" : ""}">
-      <i class="dot ${ast ? ast.dot : ""}"></i>
+    <div class="row row-card flight ${h && h.live ? "is-live" : ""}">
+      <i class="dot ${h && h.st ? h.st.dot : ""}"></i>
       <div class="row-main">
         <div class="title wrap">${esc(b.title)}</div>
         <div class="sub">
           <span class="mono">${esc(b.id)}</span>
+          <span>${esc(statusWord(b))}</span>
           <span>${esc(b.rig || "")}</span>
           <span>${b.assignee ? esc(b.assignee) : "unassigned"}</span>
           <span>${esc(ago(pick(b, FLIGHT_DATE)))}</span>
@@ -719,29 +791,28 @@ function flightRow(b, ix, ctx) {
     </div>`;
 }
 
-function renderFlight(s) {
+function renderFlight() {
   if (loadingOf("flight")) return void ($("#flight").innerHTML = SKEL);
   const fm = flightModel();
-  const ix = agentIndex(allAgents(s));
-  const ctx = agentCtx();
+  const lw = liveWork();
   const items = fm.items.filter((b) => matches(b, b.rig));
   $("#flight-count").textContent = !fm.items.length ? ""
     : items.length === fm.items.length ? `${items.length} in flight`
       : `${items.length} of ${fm.items.length} in flight`;
 
-  // Status first, so blocked work cannot hide at the bottom of a long list. byNewest
+  // Lane first, so blocked work cannot hide at the bottom of a long list. byNewest
   // ran in flightModel and byKey is stable, so newest-first survives inside a group.
-  const ordered = byKey(items, (b) => String(FLIGHT_STATES.indexOf(flightState(b))).padStart(2, "0"));
+  const ordered = byKey(items, (b) => String(FLIGHT_STATES.indexOf(flightState(lw, b))).padStart(2, "0"));
   const counts = {};
-  ordered.forEach((b) => { const k = flightState(b).key; counts[k] = (counts[k] || 0) + 1; });
+  ordered.forEach((b) => { const k = flightState(lw, b).key; counts[k] = (counts[k] || 0) + 1; });
   let last = null;
   const rows = ordered.map((b) => {
-    const st = flightState(b);
+    const st = flightState(lw, b);
     const head = st.key === last ? ""
       : `<div class="group-head">${esc(st.label)} · ${counts[st.key]}
            <span class="group-hint">${esc(st.hint)}</span></div>`;
     last = st.key;
-    return head + flightRow(b, ix, ctx);
+    return head + flightRow(b, lw);
   }).join("");
 
   $("#flight").innerHTML = errNote("flight") + (ordered.length ? rows
@@ -1053,7 +1124,7 @@ function renderReady() {
 
      Epics       what is the plan, and what sits under each part of it
      Blocked     what is stuck, and behind WHAT — the blocks edges, drawn nowhere until now
-     In progress what is moving right now, and who has it
+     In flight   what is moving right now, and who has it
      Closed      what finished, and why — close_reason, fetched nowhere until now
 
    The third of those is the `flight` read the Work tab draws (gc-8ho), filtered to
@@ -1246,14 +1317,13 @@ function renderBlocked(m) {
 function renderBacklogFlight() {
   if (loadingOf("flight")) return void ($("#backlog-flight").innerHTML = SKEL);
   const fm = flightModel();
-  const ix = agentIndex(allAgents(dataOf("status", {}) || {}));
-  const ctx = agentCtx();
+  const lw = liveWork();
   const all = fm.items.filter((b) => state.brig === "all" || b.rig === state.brig);
   const items = all.filter((b) => beadMatches(b, state.bq));
   $("#progress-count").textContent = !all.length ? ""
     : items.length === all.length ? `${all.length} in flight` : `${items.length} of ${all.length}`;
   $("#backlog-flight").innerHTML = errNote("flight") + (items.length
-    ? items.map((b) => flightRow(b, ix, ctx)).join("")
+    ? items.map((b) => flightRow(b, lw)).join("")
     : empty(all.length ? "Nothing in flight matches that filter" : "Nothing in flight here"));
 }
 
@@ -1287,6 +1357,9 @@ const STATUS_ORDER = ["open", "hooked", "in_progress", "blocked", "deferred", "c
 const STATUS_COLOR = {
   open: "var(--blue)", hooked: "var(--green)", in_progress: "var(--green)",
   blocked: "var(--red)", deferred: "var(--faint)", closed: "var(--faint)",
+  // Not a stored status and never counted by the bars below: the board's one derived
+  // column borrows this table for its rule colour (see BOARD_COLUMNS).
+  working: "var(--accent)",
 };
 const TYPE_COLOR = {
   bug: "var(--red)", epic: "var(--purple)", feature: "var(--green)",
@@ -1600,17 +1673,29 @@ $("#view-backlog").addEventListener("click", (ev) => {
 
    FOUR THINGS ARE DELIBERATE HERE.
 
-   Columns are beads' OWN statuses. Not a vocabulary of ours mapped onto them — the
-   store already has open / hooked / in_progress / blocked / deferred / closed and every
-   one of them means something the town set. A console that invented "To do / Doing /
-   Done" over the top would be a second spelling of a fact that already has one, which is
-   the failure class gc-5u3 was filed to avoid. Anything this town uses that the table
-   below does not name gets a column of its own rather than being folded into "other".
+   Columns are beads' OWN statuses, with ONE derived exception that is named as such.
+   The store has open / hooked / in_progress / blocked / deferred / closed and every one
+   of them means something the town set; a console that invented "To do / Doing / Done"
+   over the top would be a second spelling of a fact that already has one, which is the
+   failure class gc-5u3 was filed to avoid. Anything this town uses that the table below
+   does not name gets a column of its own rather than being folded into "other".
+
+   The exception is "Being worked", and it is there because the status it replaces was a
+   lie by omission. Nothing on the sling path ever writes `in_progress` — see the long
+   note in the work section above (gc-sa1) — so a column keyed on it stood permanently
+   empty while polecats worked in plain sight, and every bead they were working sat in
+   "On a hook" beside the ones nobody had started. That is not the store being drawn
+   faithfully; it is one fact with three disagreeing sources and the board picking the
+   only one that never moves. So the column is fed by workLane(): stored `in_progress`,
+   plus a hooked bead whose agent has a turn in flight on its own screen. It is not a
+   vocabulary over the statuses — every other column is still exactly its status, the
+   substitution is one rule in one function shared with the Work tab, and every card
+   that moved prints the status the store still holds, on the card, in words.
 
    BLOCKED IS ALWAYS A COLUMN, even when it is empty. It is the thing a ceremony most
    needs and the thing the Work tab structurally cannot show — `gt ready` is
    unblocked-and-open by definition — so it does not get to be absent on a good day and
-   appear on a bad one. Same for open, in progress and closed: the four corners of the
+   appear on a bad one. Same for open, being worked and closed: the four corners of the
    machine are fixed, so the shape of the board means something across rigs and days.
 
    Swimlanes are the parent-child edges, one lane per parent that has a card on the
@@ -1640,16 +1725,19 @@ $("#view-backlog").addEventListener("click", (ev) => {
    that is open. Everything else on this tab is the cached `backlog` panel, unchanged. */
 
 /* Reading order is the order work moves in, which is not the order `bd` lists statuses.
-   The four in ALWAYS are drawn whether or not anything is in them — see above. */
+   The four in ALWAYS are drawn whether or not anything is in them — see above. Every key
+   here is a stored status except `working`, which is workLane()'s one substitution and
+   says so in its hint: a column the operator has to trust is a column that has to
+   declare where it got its answer. */
 const BOARD_COLUMNS = [
-  { key: "open",        label: "Open",        hint: "filed, nobody on it" },
-  { key: "hooked",      label: "On a hook",   hint: "slung to an agent — this town's usual shape" },
-  { key: "in_progress", label: "In progress", hint: "claimed and moving" },
-  { key: "blocked",     label: "Blocked",     hint: "cannot move until something else does" },
-  { key: "deferred",    label: "Deferred",    hint: "parked on purpose" },
-  { key: "closed",      label: "Closed",      hint: "finished" },
+  { key: "open",     label: "Open",         hint: "filed, nobody on it" },
+  { key: "hooked",   label: "On a hook",    hint: "slung to an agent, whose screen is quiet" },
+  { key: "working",  label: "Being worked", hint: "an agent's screen says it has a turn in flight" },
+  { key: "blocked",  label: "Blocked",      hint: "cannot move until something else does" },
+  { key: "deferred", label: "Deferred",     hint: "parked on purpose" },
+  { key: "closed",   label: "Closed",       hint: "finished" },
 ];
-const BOARD_ALWAYS = new Set(["open", "in_progress", "blocked", "closed"]);
+const BOARD_ALWAYS = new Set(["open", "working", "blocked", "closed"]);
 // Per cell, before it stops drawing and says how many it is holding back. A 19-child
 // epic must not turn one column into a page of its own.
 const BOARD_CARDS = 8;
@@ -1668,9 +1756,11 @@ const beadStatus = (b) => String(b.status || "").toLowerCase() || "?";
 
 /** The columns this board draws: the four fixed ones, the rest of the known order where
     the beads use it, and then anything else the store came back with — a status the
-    console has never heard of is a column, not a silent omission. */
-function boardColumns(cards) {
-  const seen = new Set(cards.map(beadStatus));
+    console has never heard of is a column, not a silent omission. Read off the lanes the
+    cards will actually be placed in, so the column set and the placement can never
+    disagree about a status this table does not name. */
+function boardColumns(lw, cards) {
+  const seen = new Set(cards.map((b) => workLane(lw, b)));
   const known = BOARD_COLUMNS.filter((c) => BOARD_ALWAYS.has(c.key) || seen.has(c.key));
   const extra = [...seen].filter((k) => !BOARD_COLUMNS.some((c) => c.key === k)).sort()
     .map((k) => ({ key: k, label: k, hint: "a status this console does not name" }));
@@ -1680,11 +1770,22 @@ function boardColumns(cards) {
 /** One card. Everything on it is either structure the panel carries or a sentence the
     column would be useless without — the blocked line especially, which is the half of
     "blocked" that a status word alone never says. */
-function boardCard(m, b) {
+function boardCard(m, b, lw) {
   const unmet = unmetOf(m, b);
   const sel = selKey() === boardKey(b);
   const hand = !unmet.length && beadStatus(b) === "blocked";
   const kids = num(b.kids);
+  // The two facts the "Being worked" column is made of, on the card that column moved:
+  // the status the store still holds, and the agent screen that says otherwise. A card
+  // that moved without saying why would be exactly the invented vocabulary this board
+  // refuses (gc-sa1). Elsewhere the line appears only when it contradicts the column —
+  // a bead held by an assignee no agent answers to is not "on a hook" in any useful
+  // sense, and that is the shape a stalled sling leaves behind.
+  const h = holder(lw, b);
+  const said = holderLine(h);
+  const worked = workLane(lw, b) === "working";
+  const live = worked ? `stored ${statusWord(b)} · ${said || "unassigned"}`
+    : h && !h.agent ? said : "";
   // Badges on their own line, the id down in the sub with the rest of the metadata —
   // the convention every other row in this app already follows, and the one a 200px
   // column forces anyway: this town's ids run to 23 characters, so an id sharing the top
@@ -1696,7 +1797,7 @@ function boardCard(m, b) {
     b.priority == null ? "" : `<span class="badge p${esc(b.priority)}">P${esc(b.priority)}</span>`,
   ].filter(Boolean).join("");
   return `
-    <button type="button" class="bcard ${isClosed(b) ? "is-done" : ""} ${sel ? "is-sel" : ""}"
+    <button type="button" class="bcard ${isClosed(b) ? "is-done" : ""} ${sel ? "is-sel" : ""} ${worked ? "is-live" : ""}"
             ${cardAttrs(b)} aria-pressed="${sel}">
       ${tags ? `<span class="bcard-tags">${tags}</span>` : ""}
       <span class="bcard-title">${esc(b.title)}</span>
@@ -1705,6 +1806,7 @@ function boardCard(m, b) {
         ${b.assignee ? `<span class="bcard-who">${esc(b.assignee)}</span>` : ""}
         <span>${esc(ago(pick(b, isClosed(b) ? CLOSED_DATE : BEAD_DATE)))}</span>
       </span>
+      ${live ? `<span class="bcard-live">${esc(live)}</span>` : ""}
       ${kids ? `<span class="bcard-kids">${num(b.kids_closed)} of ${kids} children closed</span>` : ""}
       ${unmet.length ? `<span class="bcard-blocked">blocked by ${
     esc(unmet.map((x) => x.id).join(", "))}</span>` : ""}
@@ -1714,12 +1816,12 @@ function boardCard(m, b) {
 
 /** One lane's cell in one column. The cap is per cell rather than per lane so a crowded
     column cannot bury a quiet one beside it, and what it holds back is stated. */
-function boardCell(m, lane, col, cards) {
+function boardCell(m, lane, col, cards, lw) {
   const open = state.boardMore.has(key2(lane, col.key));
   const drawn = open ? cards : cards.slice(0, BOARD_CARDS);
   const rest = cards.length - drawn.length;
   return `<div class="bcol ${cards.length ? "" : "is-empty"}">
-    ${drawn.map((b) => boardCard(m, b)).join("")}
+    ${drawn.map((b) => boardCard(m, b, lw)).join("")}
     ${rest > 0 || (open && cards.length > BOARD_CARDS)
     ? `<button type="button" class="bcol-more" data-more="${esc(col.key)}"
                data-more-lane="${esc(lane)}">${
@@ -1766,7 +1868,7 @@ function laneHead(m, head, cards) {
 /** The board, as lanes over one shared set of columns. Every grid below uses the same
     template, so the tracks line up down the page and one horizontal scroll moves all of
     them — which is why the columns are named once at the top rather than per lane. */
-function boardHtml(m, lanes, cols) {
+function boardHtml(m, lanes, cols, lw) {
   const style = `--bn:${cols.length}`;
   // The column rule is coloured off the same allowlist the distribution bars use — the
   // value lands inside a style attribute, so it is never data-derived.
@@ -1785,7 +1887,7 @@ function boardHtml(m, lanes, cols) {
   const body = lanes.map((l) => {
     const collapsed = l.head && state.lanes.has(l.head.id);
     const cells = collapsed ? "" : `<div class="board-row lane-cols" style="${style}">${
-      cols.map((c) => boardCell(m, l.id, c, l.cols.get(c.key) || [])).join("")}</div>`;
+      cols.map((c) => boardCell(m, l.id, c, l.cols.get(c.key) || [], lw)).join("")}</div>`;
     const bar = l.head ? laneHead(m, l.head, l.cards)
       : lanes.length > 1 ? `<div class="lane-bar"><div class="lane-loose muted">
           Under no epic · ${l.cards.length}</div></div>` : "";
@@ -1798,7 +1900,7 @@ function boardHtml(m, lanes, cols) {
     because one of its children is on the board — never because it is typed "epic", the
     same rule the Epics section uses, since this town has parents typed feature and
     decision. A lane head is not also a card in its own lane. */
-function boardModel(m) {
+function boardModel(m, lw) {
   const inRig = m.items.filter((b) => state.boardRig === "all" || b.rig === state.boardRig);
   const shown = inRig.filter((b) => beadMatches(b, state.boardq));
   // A lane head is not a card in its own lane, so the number of cards is smaller than
@@ -1829,7 +1931,7 @@ function boardModel(m) {
   for (const l of lanes) {
     l.cols = new Map();
     for (const b of byNewest(l.cards, BEAD_DATE)) {
-      const k = beadStatus(b);
+      const k = workLane(lw, b);
       if (!l.cols.has(k)) l.cols.set(k, []);
       l.cols.get(k).push(b);
     }
@@ -1861,8 +1963,9 @@ function renderBoard() {
     state.boardRig = "all";
     renderBoardChips(full);
   }
-  const bm = boardModel(full);
-  const cols = boardColumns(bm.cards);
+  const lw = liveWork();
+  const bm = boardModel(full, lw);
+  const cols = boardColumns(lw, bm.cards);
   const blocked = bm.cards.filter((b) => isBlocked(full, b)).length;
   const laneCount = bm.lanes.filter((l) => l.head).length;
   const filtered = bm.cards.length !== bm.total;
@@ -1883,7 +1986,7 @@ function renderBoard() {
   const keep = { l: el.scrollLeft, t: el.scrollTop };
   const focused = document.activeElement?.dataset;
   const want = focused?.card || focused?.lane || focused?.more;
-  el.innerHTML = errNote("backlog") + (bm.cards.length ? boardHtml(full, bm.lanes, cols)
+  el.innerHTML = errNote("backlog") + (bm.cards.length ? boardHtml(full, bm.lanes, cols, lw)
     : empty(bm.total ? "No card matches that filter" : "No backlog has been read yet"));
   el.scrollLeft = keep.l;
   el.scrollTop = keep.t;
@@ -1978,10 +2081,18 @@ function paneHtml(m) {
   const kids = byKey(byNewest(m.children.get(b.id) || [], BEAD_DATE), (k) => (isClosed(k) ? "1" : "0"));
   const waiting = (m.dependents.get(b.id) || []);
   const stuck = blockersOf(m, b);
+  // The card's activity line is clamped to two lines inside a 200px column; this is
+  // where it is readable in full, which is the recovery path CLAUDE.md requires of it (a
+  // card that clips opens a pane). Status and Activity sit next to each other on purpose:
+  // they are two sources on one fact and they disagree constantly (gc-sa1).
+  const h = holder(liveWork(), b);
   const fields = [
     ["Rig", b.rig], ["Status", beadStatus(b)], ["Type", b.issue_type],
     ["Priority", b.priority == null ? "" : `P${b.priority}`],
     ["Assignee", b.assignee || "unassigned"],
+    ["Activity", !h ? "" : h.agent ? `${h.st.label} — ${h.st.hint}`
+      : "no live session for this assignee"],
+    ["Agent screen", h && h.note ? h.note : ""],
     ["Under", b.parent], ["Children", num(b.kids) ? `${num(b.kids_closed)} of ${num(b.kids)} closed` : ""],
     ["Updated", ago(pick(b, BEAD_DATE))], ["Closed", isClosed(b) ? ago(pick(b, CLOSED_DATE)) : ""],
   ].filter(([, v]) => v);

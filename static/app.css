@@ -761,6 +761,20 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 /* Same bargain: an agent address is long and the pane states it in full under Assignee. */
 .bcard-who { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bcard-kids { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* Why this card is in the column it is in: the status the store still holds, and the
+   agent screen that says otherwise (gc-sa1). Two lines, then a clamp — an agent's own
+   status line runs long and the recovery path is the same as the title's: the card is a
+   button, it opens the pane, and the pane states both in full under Activity.
+   Muted by default and blue on a card in the Being worked column, which is exactly the
+   bargain .flight-live makes on the Work tab: one fact, one colour, whichever tab it is
+   read on, and never the only carrier — the line is words either way. */
+.bcard-live {
+  font-size: 11.5px; color: var(--muted); line-height: 1.35; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+}
+.bcard.is-live { border-color: color-mix(in srgb, var(--blue) 55%, transparent); }
+.bcard.is-live .bcard-live { color: var(--blue); }
 /* The whole point of the blocked column, on the card: what is holding it. Wrapped
    rather than truncated — an id nobody can read is the same as no id at all. */
 .bcard-blocked { font-size: 11.5px; color: var(--red); overflow-wrap: anywhere; }

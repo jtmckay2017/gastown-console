@@ -580,6 +580,14 @@ def fixtures():
                   "in_progress", parent="ba-30", assignee="billing_api/Toast", minutes=22),
             _bead("ba-31", "Invoice totals drift by a cent on split refunds", "bug", 0,
                   parent="ba-30", blocked_by=["ba-40"], hours=1),
+            # Slung to a polecat that is no longer there — no session, no pane, no row in
+            # any `gt` read, and the bead still names it. This is what a sling that died
+            # leaves behind, and it is the third of the three shapes gc-sa1's cross-
+            # reference has to tell apart: being worked, on a hook with a quiet agent,
+            # and held by nobody at all. It stays in the hooked column and says so.
+            _bead("ba-36", "Split the settlement report by payment method", "task", 2,
+                  "hooked", parent="ba-30", assignee="billing_api/polecats/Rictus",
+                  hours=3),
             _bead("ba-34", "Retry webhook deliveries with exponential backoff", "feature",
                   2, hours=12),
             _bead("ba-38", "Drop the legacy /v1 pricing endpoint", "chore", 3, hours=30),
@@ -718,6 +726,10 @@ def fixtures():
                     "in_progress", "mayor/", "town", minutes=3),
             _flight("wp-122", "Checkout retry needs the new idempotency key", 2,
                     "blocked", "", "web_platform", hours=4),
+            # Assigned to an agent no read carries — see the backlog fixture. Both reads
+            # carry it because both draw it, and they must agree bead for bead.
+            _flight("ba-36", "Split the settlement report by payment method", 2,
+                    "hooked", "billing_api/polecats/Rictus", "billing_api", hours=3),
             # The head of the three-deep chain in the backlog fixture. It is here as
             # well as there because the two reads must agree bead for bead — see above.
             _flight("wp-142", "Land the primary and quiet tokens in the theme file", 1,

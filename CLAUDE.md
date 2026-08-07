@@ -351,6 +351,20 @@ that way rather than "simplifying":
   `gastown_console/chrome` on one side, `gastown_console/polecats/chrome` on the other, and
   crew carries `/crew/` in the address instead. `addrKeys()` in `app.js` indexes both sides
   under both spellings; never assume either one is canonical.
+- **A bead's status is not activity, and no read in this console says outright who is
+  working.** `gt sling` writes `hooked`; nothing on the sling path ever writes
+  `in_progress`. The transition exists in gastown — `polecat_spawn.go` calls
+  `polecat.Manager.SetState(StateWorking)` when the session starts — and that function
+  skips the update when the bead is already `hooked`, which on the sling path it always
+  is (gt-zecmc), while the compensating claim in `gt prime` was never built. So a lane
+  keyed on status alone leaves an "in progress" column empty while polecats work in plain
+  sight, which is one fact with three disagreeing sources again (hq-m2p, hq-r1e): the
+  bead says hooked, `gt` says working, the pane says thinking. `workLane()` in `app.js`
+  is the **one** place that answers "is somebody on this", by cross-referencing the
+  assignee against the `panes` read, and both the Work tab and the Board tab draw through
+  it. Every surface that draws the derived lane also prints the stored status beside it —
+  the console may say what it thinks is happening and may never stop saying what the
+  store holds (gc-sa1).
 - Renderers must survive `null` data, an error string, and a still-loading panel — that is
   what `loadingOf()`, `errNote()`, and the skeleton placeholders are for.
 

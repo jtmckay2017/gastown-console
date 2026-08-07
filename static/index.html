@@ -117,7 +117,10 @@
   </section>
 
   <!-- The same beads as the Backlog tab, arranged as the state machine they actually
-       are: columns are beads' own statuses (never a vocabulary of ours), swimlanes are
+       are: columns are beads' own statuses (never a vocabulary of ours) with one
+       declared exception — "Being worked" is derived from the agent screens, because
+       nothing on the sling path ever writes in_progress and a column keyed on it stood
+       empty while polecats worked (gc-sa1). Swimlanes are
        the parent-child edges, and a card that cannot move says what is holding it. The
        pane on the right is the focused half — one card's gathered context, proposed
        plan and acceptance criteria, which is the argument behind the card rather than
@@ -192,7 +195,10 @@
       <div id="blocked" class="stack"></div>
     </div>
     <div class="section">
-      <h2 class="section-head">In progress <span class="muted" id="progress-count"></span></h2>
+      <!-- "In flight", not "In progress": this is the flight read, which is every bead
+           that is neither open nor closed, and `in_progress` is a stored status almost
+           nothing in this town ever sets (gc-sa1). -->
+      <h2 class="section-head">In flight <span class="muted" id="progress-count"></span></h2>
       <div id="backlog-flight" class="stack"></div>
     </div>
     <div class="section">
