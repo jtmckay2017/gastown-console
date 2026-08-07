@@ -9,10 +9,14 @@ def _ago(**kw):
     return (datetime.now(timezone.utc) - timedelta(**kw)).isoformat().replace("+00:00", "Z")
 
 
-def _agent(name, address, role, session, running=True, state="idle", work=False, mail=0):
+def _agent(name, address, role, session, running=True, state="idle", work=False, mail=0,
+           subject=None):
+    # first_subject is always present in `gt status --json` — null when there is no
+    # unread mail. It is the subject of the oldest unread message.
     return {"name": name, "address": address, "session": session, "role": role,
             "running": running, "acp": False, "has_work": work, "state": state,
-            "unread_mail": mail, "agent_alias": "claude", "agent_info": "claude"}
+            "unread_mail": mail, "first_subject": subject,
+            "agent_alias": "claude", "agent_info": "claude"}
 
 
 def _issue(id_, title, priority, type_="task", parent=None, hours=3):
@@ -35,8 +39,13 @@ def fixtures():
         ]
         for i in range(polecats):
             pc = ["Toast", "Slit", "Nux"][i]
+            # A finished polecat reports state="done" with its process gone; keep one
+            # in the fixture so --demo shows the Done group, not just working/idle.
+            done = pc == "Nux"
             agents.append(_agent(pc, f"{name}/{pc}", "polecat", f"{prefix}-{pc.lower()}",
-                                 state="working", work=True, mail=1 if i == 0 else 0))
+                                 running=not done, state="done" if done else "working",
+                                 work=not done, mail=1 if i == 0 else 0,
+                                 subject="PR ready: session rotation fix" if i == 0 else None))
         rig_blocks.append({
             "name": name, "polecats": None, "polecat_count": polecats, "crews": None,
             "crew_count": 1 if polecats else 0, "has_witness": True, "has_refinery": True,
@@ -52,7 +61,8 @@ def fixtures():
         "daemon": {"running": True, "pid": 4242},
         "dolt": {"running": True, "pid": 4243, "port": 3307, "data_dir": "~/gt/.dolt-data"},
         "tmux": {"socket": "gt-demo", "running": True, "pid": 4244, "session_count": 11},
-        "agents": [_agent("mayor", "mayor/", "coordinator", "hq-mayor", state="working", mail=2),
+        "agents": [_agent("mayor", "mayor/", "coordinator", "hq-mayor", state="working", mail=2,
+                          subject="Escalation: invoice totals drift on split refunds"),
                    _agent("deacon", "deacon/", "health-check", "hq-deacon")],
         "rigs": rig_blocks,
         "summary": {"rig_count": 3, "polecat_count": 4, "crew_count": 2, "witness_count": 3,

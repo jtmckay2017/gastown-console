@@ -201,6 +201,50 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 .badge.warn { background: color-mix(in srgb, var(--yellow) 14%, transparent); border-color: color-mix(in srgb, var(--yellow) 40%, transparent); color: var(--yellow); }
 .badge.epic { background: color-mix(in srgb, var(--purple) 14%, transparent); border-color: color-mix(in srgb, var(--purple) 40%, transparent); color: var(--purple); }
 
+/* ---------- agents ---------- */
+.agent {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow); overflow: hidden;
+}
+.agent:hover { border-color: var(--faint); }
+.agent-row {
+  width: 100%; min-height: 52px; text-align: left; cursor: pointer;
+  background: none; border: 0; border-radius: 0;
+}
+.agent-row:focus-visible { outline: 2px solid var(--blue); outline-offset: -3px; }
+/* spans, not divs, so the markup stays valid inside a <button> */
+.agent-row .row-main, .agent-row .title { display: block; }
+
+/* The working agent is the answer this tab exists to give: tinted, edged in blue,
+   with a live dot. It has to survive a five-row scan on a phone. */
+.agent.is-working {
+  border-color: color-mix(in srgb, var(--blue) 55%, transparent);
+  box-shadow: inset 3px 0 0 var(--blue), var(--shadow);
+}
+.agent.is-working .agent-row { background: color-mix(in srgb, var(--blue) 9%, transparent); }
+.agent.is-working .dot.busy { animation: dot-live 1.8s ease-in-out infinite; }
+@keyframes dot-live { 50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--blue) 9%, transparent); } }
+.badge.working { background: var(--blue); border-color: var(--blue); color: var(--bg); }
+.dot.done { background: var(--faint); box-shadow: 0 0 0 3px color-mix(in srgb, var(--faint) 15%, transparent); }
+.group-head.is-working { color: var(--blue); }
+
+.chev { color: var(--faint); transition: transform .15s; }
+.agent-row[aria-expanded="true"] .chev { transform: rotate(90deg); }
+
+.agent-detail {
+  padding: 11px 13px; background: var(--surface-2); border-top: 1px solid var(--border-soft);
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px 18px;
+}
+.detail-item { min-width: 0; }
+.detail-item dt { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.detail-item dd { margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.detail-item dd.wrap { white-space: normal; overflow-wrap: anywhere; }
+
+@media (prefers-reduced-motion: reduce) {
+  .agent.is-working .dot.busy { animation: none; }
+  .chev { transition: none; }
+}
+
 /* ---------- rigs ---------- */
 .rig { padding: 12px; border-radius: var(--radius-sm); }
 .rig + .rig { border-top: 1px solid var(--border-soft); }
@@ -307,4 +351,9 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
   .title { white-space: normal; }
   .field.narrow { flex: 1 1 46%; }
   .scroll-y { max-height: 260px; }
+  /* The whole row is the expand affordance — keep it a comfortable thumb target,
+     and let the badges wrap instead of squeezing the name off the row. */
+  .agent-row { min-height: 56px; }
+  .agent-row .row-side { flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+  .agent-detail { grid-template-columns: repeat(auto-fit, minmax(136px, 1fr)); gap: 9px 14px; }
 }

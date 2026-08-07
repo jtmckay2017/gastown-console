@@ -61,7 +61,12 @@ function ago(ts) {
   return `${Math.round(s / 86400)}d ago`;
 }
 
-const state = { snap: null, view: "overview", q: "", source: "all", prio: "all", busy: false };
+const state = {
+  snap: null, view: "overview", q: "", source: "all", prio: "all", busy: false,
+  // Agents tab: which rows are expanded, keyed by agent address. Lives here rather
+  // than in the DOM because every render replaces #agents wholesale — see renderAgents.
+  expanded: new Set(),
+};
 
 /* ---------------- theme ---------------- */
 const theme = new URLSearchParams(location.search).get("theme")
@@ -307,30 +312,122 @@ function renderWork() {
     : errNote("ready") + (html || empty(state.q || state.prio !== "all" ? "Nothing matches that filter" : "No ready work"));
 }
 
-/* ---------------- agents ---------------- */
+/* ---------------- agents ----------------
+   This tab exists to answer one question — which agent is working right now — so
+   state is the primary sort key and each state gets its own labelled group. A
+   finished polecat reports state="done" with running=false: that is a normal end,
+   not a failure, so it must not read like a stopped agent. Order is the order of
+   this table. */
+const AGENT_STATES = [
+  { key: "working", label: "Working", dot: "busy", badge: "working" },
+  { key: "idle", label: "Idle", dot: "on", badge: "" },
+  { key: "done", label: "Done", dot: "done", badge: "ok" },
+  { key: "stopped", label: "Stopped", dot: "off", badge: "bad" },
+];
+
+/** Bucket an agent into AGENT_STATES. Unrecognised states sort with idle, but the
+    row still shows gt's own wording rather than ours. */
+function agentState(a) {
+  const st = String(a.state || "").toLowerCase();
+  const key = st === "working" ? "working" : st === "done" ? "done" : a.running ? "idle" : "stopped";
+  const rank = AGENT_STATES.findIndex((x) => x.key === key);
+  return { ...AGENT_STATES[rank], rank };
+}
+
+/** Stable identity for an agent across refreshes — the array index is not one. */
+const agentKey = (a) => String(a.address || `${a.rig}/${a.name || ""}`);
+const detailId = (key) => `agent-detail-${key.replace(/[^a-zA-Z0-9]+/g, "-")}`;
+
+/** Everything gt actually carries per agent. There is no work/issue field in
+    `gt status --json` — verified, the key is simply absent — so nothing here
+    claims to show what an agent is working on. */
+function agentDetail(a) {
+  const runtime = [a.agent_alias, a.agent_info !== a.agent_alias ? a.agent_info : ""].filter(Boolean).join(" · ");
+  const fields = [
+    ["Rig", a.rig, ""],
+    ["Address", a.address, "mono"],
+    ["Role", a.role, ""],
+    ["State", a.state, ""],
+    ["Process", a.running ? "running" : "not running", ""],
+    ["Session", a.session || "no session", "mono"],
+    ["Hook", a.has_work ? "has work" : "empty", ""],
+    ["Unread mail", a.unread_mail ? `${a.unread_mail}` : "none", ""],
+    // Fetched on every refresh and, until now, rendered nowhere.
+    ["Oldest unread", pick(a, ["first_subject"]), "wrap"],
+    ["Agent", runtime, ""],
+    ["ACP", a.acp ? "enabled" : "", ""],
+  ];
+  return `<dl class="agent-detail" id="${esc(detailId(agentKey(a)))}">${fields
+    .filter(([, v]) => v !== "" && v !== null && v !== undefined)
+    .map(([k, v, cls]) => `<div class="detail-item"><dt>${esc(k)}</dt><dd class="${cls}">${esc(v)}</dd></div>`)
+    .join("")}</dl>`;
+}
+
+function agentRow(a) {
+  const st = agentState(a);
+  const key = agentKey(a);
+  const open = state.expanded.has(key);
+  return `
+    <div class="agent ${st.key === "working" ? "is-working" : ""}">
+      <button type="button" class="row agent-row" data-agent="${esc(key)}"
+              aria-expanded="${open}" aria-controls="${esc(detailId(key))}">
+        <i class="dot ${st.dot}"></i>
+        <span class="row-main">
+          <span class="title">${esc(a.name)} <span class="muted mono">${esc(a.address || "")}</span></span>
+          <span class="sub">
+            <span class="badge">${esc(a.rig)}</span>
+            <span>${esc(a.role || "")}</span>
+            <span class="mono">${esc(a.session || "no session")}</span>
+            ${a.unread_mail ? `<span class="badge warn">${esc(a.unread_mail)} mail</span>` : ""}
+          </span>
+        </span>
+        <span class="row-side">
+          ${a.has_work ? '<span class="badge ok">has work</span>' : ""}
+          <span class="badge ${st.badge}">${esc(a.state || (a.running ? "running" : "stopped"))}</span>
+          <svg viewBox="0 0 24 24" class="ico chev" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+        </span>
+      </button>
+      ${open ? agentDetail(a) : ""}
+    </div>`;
+}
+
 function renderAgents(s) {
   if (loadingOf("status")) return void ($("#agents").innerHTML = SKEL);
-  const agents = allAgents(s);
-  $("#agent-addresses").innerHTML = agents.map((a) => `<option value="${esc(a.address)}">`).join("")
+  const all = allAgents(s);
+  $("#agent-addresses").innerHTML = all.map((a) => `<option value="${esc(a.address)}">`).join("")
     + (s.rigs || []).map((r) => `<option value="${esc(r.name)}/">`).join("");
-  $("#agents").innerHTML = errNote("status") + (agents.length ? agents.map((a) => `
-    <div class="row row-card">
-      <i class="dot ${a.running ? (a.state === "working" ? "busy" : "on") : "off"}"></i>
-      <div class="row-main">
-        <div class="title">${esc(a.name)} <span class="muted mono">${esc(a.address || "")}</span></div>
-        <div class="sub">
-          <span>${esc(a.role || "")}</span>
-          <span class="mono">${esc(a.session || "no session")}</span>
-          ${a.agent_alias ? `<span>${esc(a.agent_alias)}</span>` : ""}
-          ${a.unread_mail ? `<span class="badge warn">${a.unread_mail} mail</span>` : ""}
-        </div>
-      </div>
-      <div class="row-side">
-        ${a.has_work ? '<span class="badge ok">has work</span>' : ""}
-        <span class="badge ${a.running ? (a.state === "working" ? "p2" : "") : "bad"}">${esc(a.running ? a.state || "running" : "stopped")}</span>
-      </div>
-    </div>`).join("") : empty("No agents"));
+
+  // State first — working agents can never be buried mid-list. Array.prototype.sort
+  // is stable, so allAgents()'s town/rig/address order survives as the tiebreak
+  // inside each group (agents carry no timestamp to break ties on).
+  const agents = byKey(all, (a) => String(agentState(a).rank));
+  const counts = {};
+  agents.forEach((a) => (counts[agentState(a).key] = (counts[agentState(a).key] || 0) + 1));
+  let last = null;
+  const rows = agents.map((a) => {
+    const st = agentState(a);
+    const head = st.key === last ? ""
+      : `<div class="group-head ${st.key === "working" ? "is-working" : ""}">${esc(st.label)} · ${counts[st.key]}</div>`;
+    last = st.key;
+    return head + agentRow(a);
+  }).join("");
+
+  // An 8s auto-refresh rebuilds this subtree; expansion lives in state.expanded so it
+  // survives, and the focused row is restored so keyboard focus does not jump to <body>.
+  const focused = document.activeElement?.dataset?.agent;
+  $("#agents").innerHTML = errNote("status") + (agents.length ? rows : empty("No agents"));
+  if (focused) $$("#agents [data-agent]").find((el) => el.dataset.agent === focused)?.focus();
 }
+
+// One delegated listener: #agents is replaced wholesale on every render, per-row
+// handlers would not be.
+$("#agents").addEventListener("click", (ev) => {
+  const row = ev.target.closest("[data-agent]");
+  if (!row) return;
+  const key = row.dataset.agent;
+  if (!state.expanded.delete(key)) state.expanded.add(key);
+  renderAgents(dataOf("status", {}) || {});
+});
 
 /* ---------------- mail ---------------- */
 function renderMail() {
