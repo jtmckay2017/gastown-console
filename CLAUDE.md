@@ -114,7 +114,9 @@ above it: check a change against every line here before you claim it is done.
   floor for anything nobody styled. Expanders carry `aria-expanded` and `aria-controls`, and
   focus survives the 8s refresh that rebuilds the markup under it — `paint()` restores
   `document.activeElement` for every panel built on `expandRow()`, `renderBacklog()` and
-  `renderBoard()` do it for the older three, and `renderMap()` restores the focused node.
+  `renderBoard()` do it for the older three, `renderMap()` restores the focused node, and
+  `renderPlans()`/`paintPlansDoc()` restore the index row, the action button and the
+  scrollable `<pre>` alike.
   That is the standard to match, not exceed. `paint()` restores the panel's scroll
   position for the same reason: a card that jumps back to its first row every eight
   seconds is unreadable by anyone who cannot re-find their place at a glance.
@@ -163,6 +165,15 @@ unfinished feature.
 | `bead-edit` | `bd update` — title, type, priority, description, design, acceptance, notes | `edit.py` | anywhere |
 | `bead-link` | `bd dep add`, or `bd update --parent` | `edit.py` | anywhere |
 | `dispatch` | `bd comment`, then `gt sling` | `dispatch.py` | **the loopback only** |
+
+Two *surfaces* now open these forms — the Board tab's pane and the Plans tab — and that
+is a front-end fact, not a fifth and sixth endpoint. `HOSTS` in `app.js` is the whole of
+the difference between them (which element the form paints into, what repaints around
+it, which bead it opens on); everything below it — what is sent, what a conflict is, how
+a refusal is spoken — is one implementation that does not know which tab it is on. Keep
+it that way: a second copy of the conflict handling is a second thing to get wrong about
+somebody else's writing. `dispatch` is reachable from the Board's pane only, because
+approving a plan and reading one are different acts and only one of them starts an agent.
 
 **What is deliberately absent is as much of the design as what is there.** There is no delete,
 no close, no status change and no unlink — and no pause, resume or clear on the scheduler
@@ -240,7 +251,12 @@ chance to reject — or clobber — an edit that was never in dispute.
 
 The Board tab's `GET /api/bead` predates all of this and is still just a read. It takes two
 strings and uses them as dict keys into data the scheduler already read — it opens no file,
-spawns no process, and can only answer for a bead the backlog read carried.
+spawns no process, and can only answer for a bead the backlog read carried. The Plans tab
+asks it a **second** time for the same bead whenever the `backlog` panel lands a newer read,
+which is how it notices an agent rewriting a plan under the reader. That is still two dict
+keys and no work, and it is bounded by the backlog cadence rather than by the poll: the
+answer cannot change between two backlog reads, so asking oftener could only cost more and
+learn nothing.
 
 Why this matters more than it looks: **sending mail nudges the recipient agent awake, and Gas
 Town agents typically run with permission checks disabled.** The compose box is "start an
@@ -301,7 +317,14 @@ Other things not to erode:
 | `backlog.py` | The `backlog` read: each rig's whole backlog with its structure intact — the epic hierarchy, the `blocks` edges, and why every closed bead closed. The Work tab's reads are all about this minute; this is the one a ceremony reads. Slowest cadence, biggest payload, trimmed hardest. Also owns the prose table behind `GET /api/bead` — the four long fields, kept beside the panel rather than in it — and `apply_write()`, which folds a bead the console just wrote into that cache so a save is visible before the next read lands. |
 | `graph.py` | The same beads, drawn: epic trees and the `blocks` graph as SVG, laid out in stdlib Python. Not a read — it takes what `backlog.py` has already trimmed and rides inside that panel, so the picture and the lists beside it can never be a cadence apart. The one place markup is generated on the server, which is why it does its own escaping. Its nodes are controls rather than boxes — focusable, named, and read out in full by `app.js` — because every title in here is clipped to a pixel budget. |
 | `static/index.html` | The whole page skeleton; every panel is an empty `<div id=…>`. The one exception to "static" is `<meta name="gt-dispatch">`, which the server fills in — see `_page()`. |
-| `static/app.js` | Fetch, state, and all rendering. Vanilla JS, no framework. Seven lists drill a row down into the rest of what its read already carried; the shared half of that is the "expandable detail" section near the top — `state.open`, `expandRow()`, `detailGrid()`, `prose()`, `paint()`, `expander()`. Expansion keys are namespaced per panel, because one flat set would let a mail id and a rig name mean the same row. |
+
+The **Plans tab** is the one view that is a document rather than a panel. It draws the same
+`backlog` panel and the same `GET /api/bead` the Board's pane does, and opens the same two
+forms; what it adds is a measure a three-thousand-character plan can be read at, a renderer
+for the structure inside it, and a beat that says when an agent revised it mid-read (gc-e71).
+Diagrams in a plan are deliberately still out of scope — every renderer for one is a
+dependency, and that is a decision the operator has not made.
+| `static/app.js` | Fetch, state, and all rendering. Vanilla JS, no framework. Seven lists drill a row down into the rest of what its read already carried; the shared half of that is the "expandable detail" section near the top — `state.open`, `expandRow()`, `detailGrid()`, `prose()`, `paint()`, `expander()`. Expansion keys are namespaced per panel, because one flat set would let a mail id and a rig name mean the same row. It also carries the console's **one renderer** — `planBlocks()`/`planHtml()` in the "plans" section, which turns an agent's `design` field into headings, lists and preformatted blocks. It is hand-rolled and stays hand-rolled (a markdown dependency breaks constraint 1) and it stays on the *client* (a second server-side markup generator is what `graph.py`'s header asks not to have). It escapes every string before it adds a tag, and the only inline rule runs on the escaped text. |
 | `static/app.css` | Themes via `:root` custom properties + `:root[data-theme="light"]`. |
 | `start.sh` | Restart helper; `--lan` binds `0.0.0.0` and prints a tokenized URL. |
 

@@ -51,6 +51,7 @@
   <button class="tab is-active" data-view="overview">Overview</button>
   <button class="tab" data-view="work">Work <span class="pill" id="pill-work">0</span></button>
   <button class="tab" data-view="board">Board <span class="pill" id="pill-board">0</span></button>
+  <button class="tab" data-view="plans">Plans <span class="pill" id="pill-plans">0</span></button>
   <button class="tab" data-view="backlog">Backlog <span class="pill" id="pill-backlog">0</span></button>
   <button class="tab" data-view="agents">Agents <span class="pill" id="pill-agents">0</span></button>
   <button class="tab" data-view="mail">Mail <span class="pill" id="pill-mail">0</span></button>
@@ -149,6 +150,43 @@
         <div id="board" class="board"></div>
       </div>
       <aside class="board-pane" id="board-pane" aria-label="Planning pane"></aside>
+    </div>
+  </section>
+
+  <!-- The Board tab shows that a plan EXISTS. This one is where it gets read.
+       The planning pane beside the board is 390px wide and hidden until the right card
+       is clicked; the first real plan written into it ran to three thousand characters
+       of architecture, and a 390px column is not a container for that (gc-e71). So the
+       plan gets a view of its own: an index of every bead carrying one on the left, and
+       the plan itself at a readable measure beside it — rendered, not dumped, with its
+       headings, its numbered states and its sub-points intact.
+       It is the same read (`backlog`, plus `GET /api/bead` for the prose) and the same
+       two writes the Board tab already has: the bead editor with gc-ebv's conflict
+       handling, and a mail composer that wakes an agent about THIS bead. Nothing new is
+       posted from here, and nothing here approves or dispatches anything. -->
+  <section class="view" id="view-plans">
+    <div class="toolbar">
+      <div class="search">
+        <svg viewBox="0 0 24 24" class="ico"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="plans-q" type="search" placeholder="Filter plans by title, id or assignee…" autocomplete="off">
+      </div>
+      <div class="chips" id="plans-chips"></div>
+    </div>
+    <!-- A live region has to be in the document BEFORE its text changes to be announced,
+         and the beat that says "an agent revised this while you were reading" is markup
+         that did not exist a moment earlier. So the announcement lives here, permanently,
+         and the visible beat on the page says the same thing in the same words. -->
+    <p id="plans-live" class="sr-only" role="status" aria-live="polite"></p>
+    <div class="plans-layout">
+      <aside class="plans-index" id="plans-index" aria-label="Beads carrying a plan"></aside>
+      <div class="plans-main">
+        <article id="plans-doc" class="plans-doc"></article>
+        <!-- The composer and the editor open HERE, under the plan rather than over it:
+             the whole point of this view is that the plan is on screen while you react
+             to it, and a form that replaced it would put the operator back to writing
+             feedback about something they can no longer see. -->
+        <div id="plans-form" class="plans-form"></div>
+      </div>
     </div>
   </section>
 
@@ -269,7 +307,7 @@
 <footer class="statusbar">
   <span id="updated" class="muted">loading…</span>
   <span class="muted sep">·</span>
-  <span class="muted" id="write-note">read-only except mail and the Board tab's bead editor — no delete</span>
+  <span class="muted" id="write-note">read-only except mail and the bead editor on Board and Plans — no delete</span>
 </footer>
 
 <script src="/static/app.js"></script>

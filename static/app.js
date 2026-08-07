@@ -103,6 +103,15 @@ const state = {
   // somebody's writing. While it is set the pane is NOT repainted by the 8s poll: see
   // paintPane. `paneNote` is what the last write said, shown once the form has closed.
   form: null, paneNote: "", paneBad: false,
+  // The Plans tab. Its own filter pair again, and its own selection — the Board's pane
+  // and this view read one bead each and they are not the same bead: opening a card to
+  // check what is blocking it must not move what somebody is reading a plan in.
+  // `planLanded` is when the backlog read behind the open plan last landed, which is
+  // how this tab notices an agent has revised the plan under the reader; `planChange`
+  // is what it says about that. See renderPlans().
+  plansq: "", plansRig: "all",
+  plan: null, planData: null, planLanded: null, planChange: null,
+  planNote: "", planBad: false,
   // The map's last markup. The pictures are the biggest subtree on the page and they
   // scroll inside their own boxes, so they are only rewritten when they change — see
   // renderMap.
@@ -131,6 +140,11 @@ $$(".tab").forEach((t) => {
     state.view = t.dataset.view;
     $$(".tab").forEach((x) => x.classList.toggle("is-active", x === t));
     $$(".view").forEach((v) => v.classList.toggle("is-active", v.id === `view-${state.view}`));
+    // The Plans tab opens on the newest plan rather than on an invitation to click one,
+    // and it only fetches that plan once somebody has actually come to read it — so it
+    // is the one view that has something to do at the moment it is switched to, instead
+    // of up to eight seconds later. Everything else is already painted.
+    if (state.view === "plans" && state.snap) renderPlans();
   };
 });
 
@@ -278,6 +292,7 @@ function render() {
   renderChangelog();
   renderWorkView();
   renderBoard();
+  renderPlans();
   renderBacklog();
   renderAgents(status);
   renderMail();
@@ -2136,8 +2151,12 @@ function paneHtml(m) {
     to say (a conflict, an error, a save), through paintForm(). */
 function paintPane(m) {
   const el = $("#board-pane");
-  $("#board-layout").classList.toggle("has-pane", !!state.sel || !!state.form);
-  if (state.form) return;
+  // A form open on the PLANS tab is not this pane's business — it owns a different
+  // element on a different view, and treating it as this one's would dock an empty
+  // panel beside the board and then freeze it there.
+  const mine = state.form && state.form.host === "board";
+  $("#board-layout").classList.toggle("has-pane", !!state.sel || !!mine);
+  if (mine) return;
   const keep = el.scrollTop;
   el.innerHTML = paneHtml(m || backlogModel("all"));
   el.scrollTop = keep;
@@ -2149,7 +2168,7 @@ function selectBead(rig, id) {
   // An open form owns the pane until it is saved or cancelled. Swapping the bead under
   // it would throw away whatever is typed in it, silently, on a stray click into the
   // board — so the click is refused out loud instead.
-  if (state.form) return void formSays("Save or cancel this first — the pane is busy.");
+  if (state.form) return void formBusy();
   if (selKey() === key2(rig, id)) return void closePane();
   state.paneNote = "";
   state.paneBad = false;
@@ -2260,24 +2279,83 @@ const POSTS = { new: "/api/bead-new", edit: "/api/bead-edit", link: "/api/bead-l
    file would send is a 404 even if something built the button anyway. */
 const CAN_DISPATCH = $('meta[name="gt-dispatch"]')?.content === "on";
 
-/** Open one form in the pane. `fields` is what it is editing and `base` is what the
+/* Two surfaces now read one bead and write to it: the Board's docked pane and the Plans
+   tab (gc-e71). ONE set of forms serves both, because the thing that makes these forms
+   worth having is the conflict handling underneath them — the 409 that names the field,
+   shows what the store has now and refuses to merge — and a second copy of that is a
+   second thing to get wrong about somebody else's writing.
+
+   So a form carries the name of its host, and this table is everything the two surfaces
+   disagree about: which element the form is painted into, what repaints around it, which
+   bead and prose it opens on, and where a saved answer and a note land. Everything else
+   below — the fields, what gets sent, what a clash is, how a refusal is spoken — is one
+   implementation with no idea which tab it is on.
+
+   The selections are deliberately SEPARATE rather than shared. Opening a card on the
+   board to see what is blocking it must not move what somebody is reading on Plans, and
+   the board's pane toggles shut when you press the same card twice, which is exactly the
+   wrong gesture for an index of documents. */
+const HOSTS = {
+  board: {
+    el: "#board-pane",
+    repaint: () => renderBoard(),
+    sel: () => state.sel,
+    data: () => state.selData,
+    rig: () => (state.boardRig !== "all" ? state.boardRig : ""),
+    land: (sel, data) => { state.sel = sel; state.selData = data; },
+    say: (msg, bad) => { state.paneNote = msg; state.paneBad = bad; },
+  },
+  plans: {
+    el: "#plans-form",
+    repaint: () => renderPlans(),
+    sel: () => state.plan,
+    data: () => state.planData,
+    rig: () => (state.plansRig !== "all" ? state.plansRig : ""),
+    // A write lands on the plan the operator is reading, and the store's answer is the
+    // new baseline for the change beat too: a save must not then be announced back to
+    // the person who made it as "an agent revised this".
+    land: (sel, data) => {
+      state.plan = sel;
+      state.planData = data;
+      state.planChange = null;
+      state.planLanded = backlogLanded();
+    },
+    say: (msg, bad) => { state.planNote = msg; state.planBad = bad; },
+  },
+};
+const hostOf = (name) => HOSTS[name] || HOSTS.board;
+const formHost = () => hostOf(state.form && state.form.host);
+/** One form at a time across the whole console, and the refusal says so wherever the
+    stray click landed — including on the tab the form is NOT on, which is the case that
+    would otherwise look like a dead control. */
+function formBusy() {
+  const where = state.form && state.form.host === "plans" ? "the Plans tab" : "the Board tab";
+  formSays(`Save or cancel the form open on ${where} first — one at a time.`);
+}
+
+/** Open one form on one surface. `fields` is what it is editing and `base` is what the
     console had when it drew them — the two stay separate for the whole life of the form,
     because their difference is both what gets sent and what a conflict is measured
     against. */
-function openForm(kind) {
+function openForm(kind, hostName = "board") {
   const m = backlogModel("all");
+  const h = hostOf(hostName);
+  const sel = h.sel();
+  const selData = h.data();
+  const key = sel ? key2(sel.rig, sel.id) : "";
   // Matched on rig AND id rather than through byId, which is keyed on the id alone. Two
   // rigs with one id is unlikely and reading the wrong one is only confusing; *writing*
   // the wrong one is somebody else's bead overwritten, so this end takes the long way.
-  const b = state.sel
-    ? m.items.find((x) => x.id === state.sel.id && x.rig === state.sel.rig) || null : null;
-  const read = state.selData && state.selData.key === selKey();
-  const prose = (read && !state.selData.error && state.selData.data) || {};
-  if (kind !== "new" && !b) return void paneSays("Pick a card first.");
+  const b = sel
+    ? m.items.find((x) => x.id === sel.id && x.rig === sel.rig) || null : null;
+  const read = selData && selData.key === key;
+  const prose = (read && !selData.error && selData.data) || {};
+  const refuse = (msg) => { h.say(msg, true); h.repaint(); };
+  if (kind !== "new" && !b) return void refuse("Pick a card first.");
   // Belt and braces behind CAN_DISPATCH: the button is never built off the loopback, and
   // this is what happens if some other path ever calls for one anyway.
   if (kind === "dispatch" && !CAN_DISPATCH) {
-    return void paneSays("This console cannot dispatch — it is not bound to this machine "
+    return void refuse("This console cannot dispatch — it is not bound to this machine "
       + "only, and approving a plan starts an agent that can merge code.");
   }
   // Both of these have to be seeded from a read that landed, for two versions of one
@@ -2285,11 +2363,11 @@ function openForm(kind) {
   // somebody's plan, and the save would look like a deliberate deletion afterwards. An
   // approval opened on one would be a human signing off on a plan they were not shown.
   const needsProse = kind === "edit" || kind === "dispatch";
-  if (needsProse && (!read || state.selData.loading)) {
-    return void paneSays("Still reading this bead — try again in a moment.");
+  if (needsProse && (!read || selData.loading)) {
+    return void refuse("Still reading this bead — try again in a moment.");
   }
-  if (needsProse && state.selData.error) {
-    return void paneSays(`This bead could not be read (${state.selData.error}), so there `
+  if (needsProse && selData.error) {
+    return void refuse(`This bead could not be read (${selData.error}), so there `
       + `is nothing safe to ${kind === "dispatch" ? "approve" : "edit"} from.`);
   }
 
@@ -2310,7 +2388,8 @@ function openForm(kind) {
   }
   state.form = {
     kind,
-    rig: b ? b.rig : (state.boardRig !== "all" ? state.boardRig : (m.rigs[0] || {}).rig || ""),
+    host: hostName,
+    rig: b ? b.rig : (h.rig() || (m.rigs[0] || {}).rig || ""),
     id: b ? b.id : "",
     parent: b && kind === "new" ? b.id : "",
     fields,
@@ -2330,23 +2409,14 @@ function openForm(kind) {
     reasons: [],
     conflicts: [], err: "", msg: "", busy: false,
   };
-  state.paneNote = "";
-  state.paneBad = false;
+  h.say("", false);
   paintForm(true);
 }
 
 function closeForm() {
+  const h = formHost();
   state.form = null;
-  renderBoard();
-}
-
-/** A line the *pane* says when there is no form to say it in — a refusal to open one,
-    mostly. Same slot the last write's outcome uses, for the same reason: it is the one
-    place on this tab that reports on writing. */
-function paneSays(msg) {
-  state.paneNote = msg;
-  state.paneBad = true;
-  paintPane();
+  h.repaint();
 }
 
 /** A line the form says without anything having gone wrong — a stray click into the
@@ -2364,15 +2434,19 @@ function formSays(msg) {
     also where focus is put: on open, the first thing to fill in; after a refusal, the
     line that says why, which is what a screen reader is left on too. */
 function paintForm(fresh = false) {
-  const el = $("#board-pane");
-  $("#board-layout").classList.toggle("has-pane", true);
+  const h = formHost();
+  const el = $(h.el);
+  if (state.form.host === "board") $("#board-layout").classList.toggle("has-pane", true);
   // Rewriting the pane resets its scroll, and a form is taller than the pane — so a note
   // arriving mid-form must not throw the reader back to the top of their own writing.
   const keep = el.scrollTop;
   el.innerHTML = formHtml(backlogModel("all"));
   if (fresh) {
     el.scrollTop = 0;
-    ($("#board-pane [data-edit]") || $("#board-pane .btn"))?.focus();
+    ($(`${h.el} [data-edit]`) || $(`${h.el} .btn`))?.focus();
+    // The board's pane is sticky beside the board on a wide screen and stacked under it
+    // on a narrow one; the Plans tab's form is always below the plan it is about. Either
+    // way, a form that opened off screen is a button that appeared to do nothing.
     if (getComputedStyle(el).position === "static") {
       el.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
@@ -2380,7 +2454,7 @@ function paintForm(fresh = false) {
     el.scrollTop = keep;
     // A refusal is given focus so that it is read out and so that the next Tab starts
     // from it rather than from wherever the page happened to be.
-    if (state.form.err) $("#form-note")?.focus();
+    if (state.form.err) $(`${h.el} #form-note`)?.focus();
   }
 }
 
@@ -2769,15 +2843,14 @@ async function postWrite(path, body, f) {
     f.nowClipped = (j && j.clipped) || [];
     return void formFails((j && j.error) || "The write failed and said nothing about why.");
   }
-  // Landed. Take the store's answer as the new truth for the pane, close the form, and
-  // ask for a fresh backlog — the server has already patched its cached copy so the card
-  // moves now, and the real read overwrites that a beat later.
-  state.sel = { rig: j.rig, id: j.id };
-  state.selData = { key: key2(j.rig, j.id), data: j.prose || {} };
-  state.paneNote = j.detail || "Saved.";
-  state.paneBad = false;
+  // Landed. Take the store's answer as the new truth for the surface this form was on,
+  // close the form, and ask for a fresh backlog — the server has already patched its
+  // cached copy so the card moves now, and the real read overwrites that a beat later.
+  const h = formHost();
+  h.land({ rig: j.rig, id: j.id }, { key: key2(j.rig, j.id), data: j.prose || {} });
+  h.say(j.detail || "Saved.", false);
   state.form = null;
-  renderBoard();
+  h.repaint();
   load(true);
   setTimeout(() => load(false), 2500);
 }
@@ -2799,7 +2872,7 @@ function resolveClash(choice, i) {
     : `${label} will overwrite what the store has when you save.`;
   f.err = "";
   paintForm();
-  $("#board-pane [data-clash]")?.focus();
+  $(`${formHost().el} [data-clash]`)?.focus();
 }
 
 /** A refused approval, taken up again on the plan the store actually holds.
@@ -2837,10 +2910,10 @@ function formFails(reason) {
   paintForm();
 }
 
-/** The pane's Send. Deliberately the Mail tab's endpoint and nothing else — waking an
-    agent is already an allowlisted write, and this is a second door onto it rather than
-    a second write. The bead travels in the body so the agent knows which plan it is
-    being asked about. */
+/** The composer's Send, on the Board's pane and on the Plans tab alike. Deliberately the
+    Mail tab's endpoint and nothing else — waking an agent is already an allowlisted
+    write, and this is a second door onto it rather than a second write. The bead travels
+    in the body so the agent knows which plan it is being asked about. */
 async function sendFromPane(f) {
   const to = f.fields.to.trim(), subject = f.fields.subject.trim();
   const message = f.fields.message.trim();
@@ -2855,10 +2928,10 @@ async function sendFromPane(f) {
     const j = await r.json();
     f.busy = false;
     if (!j.ok) return void formFails(j.error || "The send failed and said nothing about why.");
-    state.paneNote = `Sent to ${to}. It will wake and read ${f.id}.`;
-  state.paneBad = false;
+    const h = formHost();
+    h.say(`Sent to ${to}. It will wake and read ${f.id}.`, false);
     state.form = null;
-    renderBoard();
+    h.repaint();
     load(true);
   } catch (e) {
     f.busy = false;
@@ -2869,8 +2942,9 @@ async function sendFromPane(f) {
 /* ---- wiring ---- */
 
 // Typed values live in state, not in the DOM: a form that repaints (a conflict, a
-// failure) has to come back with what was typed still in it.
-$("#view-board").addEventListener("input", (ev) => {
+// failure) has to come back with what was typed still in it. One handler, bound to both
+// surfaces the forms can be painted on — see HOSTS.
+function formTyping(ev) {
   const el = ev.target.closest("[data-edit]");
   if (!el || !state.form) return;
   const name = el.dataset.edit;
@@ -2882,10 +2956,12 @@ $("#view-board").addEventListener("input", (ev) => {
   }
   if (name === "parent" && state.form.kind === "new") state.form.parent = el.value;
   else state.form.fields[name] = el.value;
-});
+}
+$("#view-board").addEventListener("input", formTyping);
+$("#view-plans").addEventListener("input", formTyping);
 
 $("#board-new").onclick = () => {
-  if (state.form) return void formSays("Save or cancel this first — the pane is busy.");
+  if (state.form) return void formBusy();
   state.sel = null;
   state.selData = null;
   openForm("new");
@@ -2897,8 +2973,8 @@ $("#board-q").oninput = (e) => { state.boardq = e.target.value.toLowerCase(); re
 // a console that can start an agent is a different thing from one that cannot, and the
 // operator should not have to open a tab to find out which one they are looking at.
 if (CAN_DISPATCH) {
-  $("#write-note").textContent = "read-only except mail, the Board tab's bead editor, "
-    + "and approve-and-dispatch (this machine only) — no delete";
+  $("#write-note").textContent = "read-only except mail, the bead editor on Board and "
+    + "Plans, and approve-and-dispatch (this machine only) — no delete";
 }
 
 // One delegated listener over the whole tab: the board and the pane are both replaced
@@ -2926,6 +3002,520 @@ $("#view-board").addEventListener("click", (ev) => {
   if (!lane) return;
   if (!state.lanes.delete(lane.dataset.lane)) state.lanes.add(lane.dataset.lane);
   renderBoard();
+});
+
+/* ---------------- plans ----------------
+   The Board tab says a plan EXISTS. This tab is where one gets read.
+
+   It is here because of a specific failure, reported by the operator after using the
+   planning pane for real: "it is impossible to view this." gc-ebv put the planning
+   surface in a 390px aside that is hidden until the right card is clicked on the right
+   tab at the right window width, and the first real plan written into it ran to three
+   thousand characters of architecture — headings, ten numbered states, sub-points,
+   an error-handling section and a list of open questions. A 390px column is not a
+   container for that, and "hidden until you click the right thing" cost the operator
+   three rounds of not finding it at all (gc-e71).
+
+   FOUR THINGS ARE DELIBERATE HERE.
+
+   THE PLAN IS THE CONTENT. It gets the width, a measure that reads like a document
+   rather than a gutter, and an index beside it rather than above it. The index is every
+   bead the backlog read marked as carrying one (`b.plan` — a design or acceptance
+   criteria), newest first, which is the same bit the board draws on a card.
+
+   IT IS RENDERED, NOT DUMPED. Agent-authored plans are structured prose: caps headings,
+   numbered states with hanging indents, sub-bullets, occasional monospace fragments.
+   Every other prose surface on this page is `.prose-box`, which pre-wraps and is
+   correct there — those are excerpts. Here the structure IS the thing being read, so
+   there is a small renderer below (planBlocks/planHtml). It is hand-rolled and it stays
+   hand-rolled: a markdown dependency would break the project's first constraint, and
+   putting the renderer on the server would make a second place that generates markup,
+   which graph.py's header is explicit about not wanting company in.
+
+   YOU REACT TO IT WITHOUT LEAVING IT. Feedback to an agent and the operator's own edit
+   both open UNDER the plan rather than over it — this whole view exists because the plan
+   was not readable while you were working on it, and a form that replaced it would put
+   that back. Both are the existing writes: `POST /api/mail` and `bead-edit`, with
+   gc-ebv's conflict handling untouched. No new endpoint.
+
+   AND IT SAYS WHEN THE PLAN MOVED. Agents rewrite these beads continuously. Silent
+   replacement under a reader is the failure mode, so the backlog read's landing time is
+   tracked, the prose is re-read when it changes, and what changed is said out loud —
+   in a beat on the page and in a live region for a screen reader. */
+
+/* The five long fields a bead carries its thinking in, in the order a plan is READ
+   rather than the order it is stored: what to do, how anybody will know it is done,
+   the ground it was decided on, then the running commentary. */
+const PLAN_FIELDS = [
+  ["design", "Proposed plan"],
+  ["acceptance", "Acceptance criteria"],
+  ["desc", "Gathered context"],
+  ["notes", "Notes"],
+  ["reason", "Why it closed"],
+];
+const planKey = () => (state.plan ? key2(state.plan.rig, state.plan.id) : "");
+const planLabel = (k) => (PLAN_FIELDS.find(([f]) => f === k) || [k, k])[1];
+/** "a", "a and b", "a, b and c" — a sentence, because the beat below is one. */
+const listWords = (xs) => (xs.length < 2 ? xs.join("")
+  : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
+
+/** When the backlog read behind the open plan last landed, on the SERVER's clock: `age`
+    is measured against the snapshot's own `at`, so this is stable even where the browser
+    disagrees about the time. It is the only signal that separates a revision arriving
+    from a repaint happening, and every other panel on this page gets away without one
+    because none of them is a document somebody is in the middle of reading. */
+function backlogLanded() {
+  const p = panel("backlog");
+  const at = state.snap && state.snap.at;
+  return at == null || p.age == null ? null : at - p.age;
+}
+
+/* ---- the renderer ----
+   Line-based and deliberately small. It knows five things — headings, paragraphs,
+   lists, preformatted blocks and inline monospace — because those are what agents
+   actually write into a `design` field, and every rule below is answering a real line
+   from a real plan (gc-lzc) rather than a specification.
+
+   IT REFLOWS. Plans arrive hard-wrapped at whatever width the agent's terminal was, and
+   preserving those breaks means the measure is set by a tmux pane rather than by the
+   reader's screen — which is `.prose-box`'s behaviour and is exactly what "it is
+   impossible to view this" was about. So continuation lines are joined into their
+   paragraph and the browser wraps them to the column. The two things that must NOT be
+   reflowed are protected: a fenced block, and a run of box-drawing characters, both of
+   which come through verbatim in a `<pre>` that scrolls on its own.
+
+   EVERY MARKER IS THE AUTHOR'S. An ordered list draws the number that was typed rather
+   than one the browser counted, because a plan says things like "states 7-8" about
+   itself and a renumbered list would make that sentence wrong.
+
+   ESCAPING: every piece of text goes through esc() BEFORE any markup is added, and the
+   only inline rule runs on the escaped string. Backticks survive esc(), angle brackets
+   do not — which is the property the whole thing rests on. */
+const PL_FENCE = /^\s*```/;
+const PL_ATX = /^(#{1,6})\s+(.*)$/;
+const PL_ORDER = /^(\(?\d{1,3}[.)])\s+(.*)$/;
+const PL_BULLET = /^([-*•·+])\s+(.*)$/;
+/* Box drawing and block elements only — U+2500..U+259F. Emphatically NOT the em dash at
+   U+2014, which agent prose is full of and which sits nowhere near this range. */
+const PL_ART = /[\u2500-\u259F]/g;
+/* A caps line is this town's heading. It has to be short, have letters, have no
+   lowercase and not end like a sentence — "THE ONLY NON-IDEMPOTENT STEP AND THE ONE
+   THAT WILL HURT YOU. Card issuance" is a real line and is not a heading. */
+const PL_CAPS = (t) => t.length <= 78 && /[A-Z]{2}/.test(t) && t === t.toUpperCase()
+  && !/[.!?]$/.test(t);
+const planInline = (t) => t.replace(/`([^`\n]+)`/g, '<code class="mono">$1</code>');
+
+/** A verbatim run, with the indent it was carrying stripped — a diagram indented under
+    a list item is still a diagram, not a diagram plus five spaces of margin. */
+function planDedent(rows) {
+  const live = rows.filter((r) => r.trim());
+  if (!live.length) return "";
+  const width = Math.min(...live.map((r) => r.length - r.trimStart().length));
+  return rows.map((r) => r.slice(width)).join("\n").replace(/\s+$/, "");
+}
+
+/** One prose field, as a tree of blocks. Lists nest by indentation, with a ±2 tolerance
+    because " 10." sits one column left of "  9." whenever the numbers are right-aligned
+    — and losing the list there would restart the numbering mid-plan. */
+function planBlocks(text) {
+  const lines = String(text || "").replace(/\r\n?/g, "\n").replace(/\t/g, "    ").split("\n");
+  const roots = [];
+  const frames = [];        // open lists, outermost first
+  let para = null;          // the paragraph currently taking continuation lines
+  let paraAt = 0;           // the indent a line has to reach to continue it
+
+  const items = (f) => f.list.items[f.list.items.length - 1].blocks;
+  const into = () => (frames.length ? items(frames[frames.length - 1]) : roots);
+  const closeTo = (indent) => {
+    while (frames.length && frames[frames.length - 1].indent > indent) frames.pop();
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i].replace(/\s+$/, "");
+    if (!raw.trim()) { para = null; continue; }
+    const indent = raw.length - raw.trimStart().length;
+    const body = raw.trim();
+
+    if (PL_FENCE.test(raw)) {
+      const buf = [];
+      for (i++; i < lines.length && !PL_FENCE.test(lines[i]); i++) buf.push(lines[i]);
+      closeTo(indent);
+      para = null;
+      into().push({ t: "pre", text: planDedent(buf) });
+      continue;
+    }
+    const atx = body.match(PL_ATX);
+    if (atx) {
+      frames.length = 0;
+      para = null;
+      roots.push({ t: "h", level: Math.min(atx[1].length, 3), text: atx[2] });
+      continue;
+    }
+    // Three box characters, not one: a stray glyph in a sentence must not turn the rest
+    // of the paragraph into a code block, and a real diagram never has fewer.
+    if ((raw.match(PL_ART) || []).length >= 3) {
+      const buf = [raw];
+      while (i + 1 < lines.length && lines[i + 1].trim()) buf.push(lines[++i]);
+      closeTo(indent);
+      para = null;
+      into().push({ t: "pre", text: planDedent(buf) });
+      continue;
+    }
+    const ord = body.match(PL_ORDER);
+    const mark = ord || body.match(PL_BULLET);
+    if (mark) {
+      const ordered = !!ord;
+      while (frames.length && indent < frames[frames.length - 1].indent - 2) frames.pop();
+      let top = frames[frames.length - 1];
+      // A bullet where numbers were is a different list at the same level, not the next
+      // item of this one.
+      if (top && Math.abs(indent - top.indent) <= 2 && top.list.ordered !== ordered) {
+        frames.pop();
+        top = frames[frames.length - 1];
+      }
+      if (!top || indent > top.indent + 2) {
+        const list = { t: "list", ordered, items: [] };
+        into().push(list);
+        frames.push({ indent, list });
+      }
+      const list = frames[frames.length - 1].list;
+      // A step written as a name, a gap, and what kind of thing it is —
+      // "ValidateRequest            Task, Lambda" — is the shape this town's plans use
+      // for a numbered state, and reflowing it into the sentence below would run all
+      // three together. Three spaces or more is the signal; ordinary prose never has
+      // them. The description then starts its own paragraph rather than trailing the
+      // name, which is what makes the states visually distinct at all.
+      const gap = mark[2].match(/^(\S.*?\S|\S)\s{3,}(\S.*)$/);
+      para = gap ? null : { t: "p", text: mark[2] };
+      list.items.push({ mark: mark[1],
+        blocks: [gap ? { t: "lead", text: gap[1], aside: gap[2] } : para] });
+      paraAt = indent + 1;
+      continue;
+    }
+    if (para && indent >= paraAt) {
+      para.text += ` ${body}`;
+      continue;
+    }
+    if (!para && PL_CAPS(body)) {
+      // Only where a block starts. Mid-paragraph a caps line is somebody shouting, and
+      // promoting it to a heading would cut the sentence it belongs to in half.
+      frames.length = 0;
+      roots.push({ t: "h", level: 1, text: body });
+      continue;
+    }
+    closeTo(indent);
+    para = { t: "p", text: body };
+    paraAt = indent;
+    into().push(para);
+  }
+  return roots;
+}
+
+/** Blocks, as markup. `<ol>` keeps the semantics a screen reader announces; the marker
+    beside it is the author's own and is hidden from that announcement so the item is
+    not numbered twice. */
+function planHtml(blocks) {
+  return blocks.map((b) => {
+    if (b.t === "h") {
+      const tag = `h${3 + b.level}`;
+      return `<${tag} class="pl-h">${planInline(esc(b.text))}</${tag}>`;
+    }
+    if (b.t === "lead") {
+      return `<p class="pl-lead"><span class="pl-lead-main">${planInline(esc(b.text))}</span>
+        <span class="pl-aside">${planInline(esc(b.aside))}</span></p>`;
+    }
+    if (b.t === "pre") {
+      // Focusable, and named: it scrolls sideways when the diagram is wider than the
+      // measure, and a scroll only a mouse can reach is not on this page (gc-uu8).
+      return `<pre class="pl-pre" tabindex="0" role="group"
+        aria-label="Preformatted block">${esc(b.text)}</pre>`;
+    }
+    if (b.t === "list") {
+      const tag = b.ordered ? "ol" : "ul";
+      return `<${tag} class="pl-list">${b.items.map((it) => `<li class="pl-item">
+        <span class="pl-mark" aria-hidden="true">${esc(it.mark)}</span>
+        <div class="pl-body">${planHtml(it.blocks)}</div>
+      </li>`).join("")}</${tag}>`;
+    }
+    return `<p class="pl-p">${planInline(esc(b.text))}</p>`;
+  }).join("");
+}
+const planProse = (text) => planHtml(planBlocks(text));
+
+/* ---- the view ---- */
+
+function plansModel() {
+  const m = backlogModel("all");
+  // The one bit the backlog read already computes: somebody has written a design or
+  // acceptance criteria on this bead. The board draws it as a chip; here it is the
+  // membership rule for the whole tab.
+  const all = m.items.filter((b) => b.plan);
+  const inRig = all.filter((b) => state.plansRig === "all" || b.rig === state.plansRig);
+  const shown = byNewest(inRig.filter((b) => beadMatches(b, state.plansq)), BEAD_DATE);
+  return { m, all, shown };
+}
+
+/** One row of the index. The title wraps rather than clipping — this is the list
+    somebody is choosing from, so an ellipsis here would need a recovery path and the
+    recovery path is the row itself. */
+function planRow(m, b) {
+  const on = planKey() === key2(b.rig, b.id);
+  const st = beadStatus(b);
+  return `
+    <button type="button" class="row plan-row ${on ? "is-on" : ""}"
+            data-plan="${esc(b.id)}" data-rig="${esc(b.rig || "")}" aria-pressed="${on}">
+      <i class="dot ${beadDot(m, b)}"></i>
+      <span class="row-main">
+        <span class="title wrap">${esc(b.title)}</span>
+        <span class="sub">
+          <span class="mono">${esc(b.id)}</span>
+          <span>${esc(b.rig || "")}</span>
+          ${b.assignee ? `<span>${esc(b.assignee)}</span>` : ""}
+          <span>${esc(ago(pick(b, isClosed(b) ? CLOSED_DATE : BEAD_DATE)))}</span>
+        </span>
+      </span>
+      <span class="row-side">
+        ${b.priority == null ? "" : `<span class="badge p${esc(b.priority)}">P${esc(b.priority)}</span>`}
+        <span class="badge ${st === "closed" ? "ok" : st === "blocked" ? "bad" : ""}">${esc(st)}</span>
+      </span>
+    </button>`;
+}
+
+function plansIndexHtml(m, shown, all) {
+  const head = `<div class="plans-index-head">
+    <h2 class="section-head">Plans <span class="muted">${
+  shown.length === all.length ? all.length : `${shown.length} of ${all.length}`}</span></h2>
+    <p class="plans-index-note muted">Beads carrying a proposed plan or acceptance
+      criteria, newest first.</p>
+  </div>`;
+  if (loadingOf("backlog")) return head + SKEL;
+  const rows = shown.length
+    ? `<div class="stack plans-list">${shown.map((b) => planRow(m, b)).join("")}</div>`
+    : empty(all.length ? "No plan matches that filter"
+      : "Nothing in this town has a plan written on it yet — draft one from the Board tab, "
+        + "or ask an agent to.");
+  return head + errNote("backlog") + rows;
+}
+
+/** What changed under the reader, and when. Not auto-dismissed and not a colour on its
+    own: it says which fields moved, in words, and stays until it is acknowledged. */
+function planBeat() {
+  const c = state.planChange;
+  if (!c) return "";
+  return `<div class="plan-beat">
+    <span class="plan-beat-said">Updated ${esc(ago(c.at))}, while you were reading it —
+      ${esc(listWords(c.fields.map(planLabel)))} changed. Everything below is the new
+      version.</span>
+    <button type="button" class="btn small" data-plan-seen="1">Got it</button>
+  </div>`;
+}
+
+/** The prose half, out of `GET /api/bead` — the same fetch and the same four states the
+    Board's pane draws, rendered rather than pre-wrapped. */
+function plansProseHtml() {
+  const key = planKey();
+  const d = state.planData && state.planData.key === key ? state.planData : null;
+  if (!d || d.loading) return '<div class="pane-wait">reading the bead…</div>';
+  if (d.error) return `<div class="error-note">${esc(d.error)}</div>`;
+  const p = d.data || {};
+  const written = PLAN_FIELDS.filter(([k]) => p[k]);
+  if (!written.length) {
+    return empty("Nothing is written on this bead — no plan, no criteria, no context.");
+  }
+  const short = new Set(p.clipped || []);
+  return written.map(([k, label]) => `
+    <section class="plan-sec">
+      <h3 class="plan-sec-head">${esc(label)}</h3>
+      ${short.has(k) ? `<p class="form-clipped">The console only has part of this field —
+        it is longer than one response carries. Read the whole thing with
+        <code class="mono">bd show ${esc(state.plan.id)}</code>.</p>` : ""}
+      ${planProse(p[k])}
+    </section>`).join("");
+}
+
+function plansDocHtml(m) {
+  const note = state.planNote ? `<p class="pane-saved ${state.planBad ? "is-bad" : ""}"
+    role="${state.planBad ? "alert" : "status"}">${esc(state.planNote)}</p>` : "";
+  if (!state.plan) {
+    return note + `<div class="plan-none">${empty(
+      "Pick a plan on the left to read it, react to it, or revise it.")}</div>`;
+  }
+  const b = m.items.find((x) => x.id === state.plan.id && x.rig === state.plan.rig);
+  if (!b) {
+    return note + `<div class="plan-none">${empty(
+      `${state.plan.id} is not in the backlog the console last read.`)}</div>`;
+  }
+  const meta = [b.rig, b.issue_type, b.assignee || "unassigned",
+    `updated ${ago(pick(b, isClosed(b) ? CLOSED_DATE : BEAD_DATE))}`].filter(Boolean);
+  const st = beadStatus(b);
+  return note + `
+    <header class="plan-head">
+      <h2 class="plan-title" tabindex="-1">${esc(b.title)}</h2>
+      <div class="plan-meta">
+        <span class="mono">${esc(b.id)}</span>
+        <span class="badge ${st === "closed" ? "ok" : st === "blocked" ? "bad" : ""}">${esc(st)}</span>
+        ${b.priority == null ? "" : `<span class="badge p${esc(b.priority)}">P${esc(b.priority)}</span>`}
+        ${meta.map((v) => `<span>${esc(v)}</span>`).join("")}
+      </div>
+      <!-- The two halves of the operator's loop, side by side and always live: ask an
+           agent to revise this, or revise it yourself. Both open below, so the plan
+           stays on screen while you write about it. -->
+      <div class="plan-acts">
+        <button type="button" class="btn small" data-form="mail">Send feedback to an agent</button>
+        <button type="button" class="btn small" data-form="edit">Edit this plan</button>
+      </div>
+    </header>
+    ${planBeat()}
+    ${plansProseHtml()}`;
+}
+
+/** The document half, painted on its own. The page scrolls, not this element, so a
+    repaint keeps the reader's place for free — but focus does not, so the controls and
+    the scrollable `<pre>` blocks are found again by key like every other panel here. */
+function paintPlansDoc(m) {
+  const el = $("#plans-doc");
+  const d = document.activeElement && document.activeElement.dataset;
+  const was = d && (d.form ? `f:${d.form}` : d.pre ? `p:${d.pre}` : "");
+  el.innerHTML = plansDocHtml(m || backlogModel("all"));
+  $$("#plans-doc .pl-pre").forEach((n, i) => { n.dataset.pre = String(i); });
+  if (was) {
+    $$("#plans-doc [data-form], #plans-doc [data-pre]")
+      .find((n) => (n.dataset.form ? `f:${n.dataset.form}` : `p:${n.dataset.pre}`) === was)
+      ?.focus();
+  }
+}
+
+function renderPlans() {
+  const { m, all, shown } = plansModel();
+  $("#pill-plans").textContent = all.length;
+  if (state.plansRig !== "all" && !m.rigs.some((r) => r.rig === state.plansRig)) {
+    state.plansRig = "all";
+  }
+  renderPlansChips(m);
+
+  const idx = $("#plans-index");
+  const d = document.activeElement && document.activeElement.dataset;
+  const want = d && d.plan ? key2(d.rig, d.plan) : "";
+  const top = idx.scrollTop;
+  idx.innerHTML = plansIndexHtml(m, shown, all);
+  idx.scrollTop = top;
+  if (want) {
+    $$("#plans-index [data-plan]")
+      .find((n) => key2(n.dataset.rig, n.dataset.plan) === want)?.focus();
+  }
+
+  const mine = state.form && state.form.host === "plans";
+  // Landing on a document rather than on an invitation, but only once somebody has
+  // actually opened the tab — this is a fetch, cheap as it is, and no other tab pays
+  // for a panel nobody is looking at. Never with a form open ANYWHERE: selectBead's
+  // refusal is an answer to a click, and nobody clicked this.
+  if (!state.plan && !state.form && state.view === "plans" && shown.length) {
+    return void selectPlan(shown[0].rig, shown[0].id);
+  }
+  // A revision landed under the reader. Only ever between reads — while a form is open
+  // the prose behind it is frozen for the same reason the Board's pane is, and a plan
+  // that moves under an editor is what the 409 is for.
+  const landed = backlogLanded();
+  if (state.plan && !mine && landed != null && state.planLanded != null
+      && landed > state.planLanded) {
+    state.planLanded = landed;
+    pullPlan();
+  }
+  paintPlansDoc(m);
+  if (!mine) $("#plans-form").innerHTML = "";
+}
+
+function renderPlansChips(m) {
+  const names = byKey(m.rigs.map((r) => r.rig), (n) => (n === "town" ? "0" : `1${n}`));
+  $("#plans-chips").innerHTML = [["all", "All rigs"], ...names.map((n) => [n, n])]
+    .map(([k, label]) => `<button class="chip ${state.plansRig === k ? "is-active" : ""}"
+      data-plrig="${esc(k)}">${esc(label)}</button>`).join("");
+  $$("#plans-chips [data-plrig]").forEach((b) =>
+    (b.onclick = () => { state.plansRig = b.dataset.plrig; renderPlans(); }));
+}
+
+function selectPlan(rig, id) {
+  if (state.form) {
+    // The form may be on the other tab entirely, where its own refusal would be spoken
+    // into a panel nobody is looking at — so this one is said here.
+    if (state.form.host === "plans") return void formBusy();
+    state.planNote = "A form is open on the Board tab — save or cancel it there first.";
+    state.planBad = true;
+    return void paintPlansDoc();
+  }
+  state.planNote = "";
+  state.planBad = false;
+  state.planChange = null;
+  state.plan = { rig, id };
+  state.planData = { key: key2(rig, id), loading: true };
+  state.planLanded = backlogLanded();
+  renderPlans();
+  pullPlan();
+}
+
+/** One plan's prose, and — from the second read onwards — what moved since the last one.
+    Same endpoint the Board's pane uses: a dict the backlog refresh already filled, so it
+    can be asked again whenever that refresh lands without costing a `bd` call. */
+async function pullPlan() {
+  const key = planKey();
+  if (!key) return;
+  const { rig, id } = state.plan;
+  const had = state.planData && state.planData.key === key && !state.planData.error
+    ? state.planData.data : null;
+  let got;
+  try {
+    const r = await fetch(`/api/bead?rig=${encodeURIComponent(rig)}&id=${encodeURIComponent(id)}`,
+      { headers: { Accept: "application/json" } });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const j = await r.json();
+    if (planKey() !== key) return;                // switched or closed mid-flight
+    got = { key, data: j.data, error: j.error };
+  } catch (e) {
+    if (planKey() !== key) return;
+    got = { key, error: e.message };
+  }
+  // Only against a copy this tab actually showed somebody: the first read of a bead is
+  // not a revision of it, and neither is one that arrived while the pane said "reading".
+  if (had && got.data) {
+    const moved = PLAN_FIELDS.map(([k]) => k)
+      .filter((k) => (had[k] || "") !== (got.data[k] || ""));
+    if (moved.length) {
+      state.planChange = { fields: moved, at: new Date().toISOString() };
+      // The beat is markup that did not exist a moment ago, and a live region has to be
+      // in the document BEFORE its text changes to be announced reliably — so the
+      // announcement is a permanent region in index.html and the beat is what it says.
+      $("#plans-live").textContent = `The plan on ${id} changed while you were reading it: `
+        + `${listWords(moved.map(planLabel))} updated.`;
+    }
+  }
+  state.planData = got;
+  paintPlansDoc();
+}
+
+function dismissPlanChange() {
+  state.planChange = null;
+  $("#plans-live").textContent = "";
+  paintPlansDoc();
+  // The button that was pressed no longer exists; leaving focus on <body> would drop a
+  // keyboard reader back to the top of the page, so it goes to the plan it was about.
+  $("#plans-doc .plan-title")?.focus();
+}
+
+$("#plans-q").oninput = (e) => { state.plansq = e.target.value.toLowerCase(); renderPlans(); };
+
+// One delegated listener over the tab, for the same reason the Board has one: the index
+// and the document are both replaced wholesale on every render.
+$("#view-plans").addEventListener("click", (ev) => {
+  if (ev.target.closest("[data-close-pane]")) return void closeForm();
+  const open = ev.target.closest("[data-form]");
+  if (open) return void openForm(open.dataset.form, "plans");
+  if (ev.target.closest("[data-form-cancel]")) return void closeForm();
+  if (ev.target.closest("[data-form-save]")) return void submitForm();
+  if (ev.target.closest("[data-plan-seen]")) return void dismissPlanChange();
+  const clash = ev.target.closest("[data-clash]");
+  if (clash) return void resolveClash(clash.dataset.clash, Number(clash.dataset.clashI));
+  const row = ev.target.closest("[data-plan]");
+  if (row) selectPlan(row.dataset.rig, row.dataset.plan);
 });
 
 /* ---------------- agents ----------------

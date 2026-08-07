@@ -136,12 +136,19 @@ def prose(backlog_block):
     "nothing written down" and not "not carried", so the blanks are filled in below off
     the same beads the board will draw.
 
-    Four cases here are load-bearing, and they are the ones the bead asks demo to show:
+    Five cases here are load-bearing, and they are the ones the beads ask demo to show:
 
       wp-110  an epic with nineteen children, whose description runs past the clip the
               panel carries — so the pane visibly holds more than the card does.
       wp-120  a card carrying BOTH a proposed plan and acceptance criteria, which is
               the pair the pane exists for.
+      ba-30   THE PLANS TAB'S CASE (gc-e71): a design of the size and shape agents
+              actually write — a caps heading, a numbered list of steps with hanging
+              indents and sub-points under one of them, a fenced fragment, and a list of
+              open questions. It is here so the renderer can be checked with no town
+              attached, and so a change to it is checked against real structure rather
+              than against one flat paragraph. Keep it structured; a fixture that was
+              only prose would let planBlocks() rot silently.
       wp-122  a blocked card, so the pane's blocked-by list has something real above
               prose that says what the block is actually about.
       wp-90   closed with a reason, and notes underneath it — the retro case.
@@ -214,9 +221,53 @@ def prose(backlog_block):
                 "desc": "Three separate reports of totals drifting by a cent, all of "
                         "them on refunds split across two payment methods. Treat the "
                         "rounding rule as the deliverable, not each symptom.",
-                "design": "One rounding rule, applied at the ledger boundary rather "
-                          "than per payment method. Each method rounding its own share "
-                          "is what produces the drift.",
+                # Structured on purpose — see the note at the top of this function. The
+                # shape is copied from a real one: caps headings, a numbered list whose
+                # continuation lines hang under the number, sub-points under the step
+                # that needs them, a fenced fragment, and questions at the end.
+                "design": """ROUNDING AT THE LEDGER BOUNDARY, NOT PER METHOD
+
+One rounding rule, applied once, where the ledger is written. Each payment
+method rounding its own share is what produces the drift: two halves of a
+refund each round to the nearest cent and the pair no longer sums to the
+whole.
+
+THE CHANGE
+
+  1. StripAdapterRounding      delete
+     Each method adapter rounds on the way out today. Delete that and let them
+     return exact rational amounts.
+
+  2. LedgerPost                the one rounding site
+     The boundary is the only place that knows the whole refund, and therefore
+     the only place that can round it without losing a cent somewhere else.
+
+  3. AllocateRemainder         largest-remainder
+     A three-way split of 10.00 cannot divide evenly, so somebody takes the
+     extra cent. Ties break on the method id:
+     - never random, or two runs of the same refund disagree
+     - never "the first method", which is insertion order and therefore not
+       stable across a retry
+     - recorded on the ledger line, so a support question has an answer
+
+  4. Backfill                  by hand, three rows
+     A migration for three rows is a bigger risk than the three rows.
+
+THE INVARIANT
+
+```
+sum(line.amount for line in refund.lines) == refund.total
+```
+
+Assert it in `Ledger.post()` rather than in a test: the test proves it for the
+fixtures, the assertion proves it for production.
+
+OPEN QUESTIONS — these change the shape, so answer before building:
+
+  1. Does the ledger already store the split, or only the total? If only the
+     total, step 3 needs a schema change and this is two beads.
+  2. Are refunds ever split across currencies? If so, "the whole" is not a
+     single number and the rule above is wrong.""",
                 "acceptance": "A split refund reconciles to the cent against the "
                               "ledger for every split the fixtures cover.",
             },
