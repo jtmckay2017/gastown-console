@@ -60,7 +60,7 @@ def _flight(id_, title, priority, status, assignee, rig, type_="task", **ago):
 
 
 def _bead(id_, title, type_, priority, status="open", parent=None, assignee="",
-          reason="", desc="", blocked_by=(), more=False, **ago):
+          reason="", desc="", blocked_by=(), more=False, plan=False, **ago):
     """One entry of the `backlog` read, shaped exactly as backlog._project() returns it
     — already trimmed, empty fields absent rather than null, and prose (`desc`,
     `close_reason`) only where prose is the answer."""
@@ -76,6 +76,10 @@ def _bead(id_, title, type_, priority, status="open", parent=None, assignee="",
             out[key] = value
     if more:
         out["more"] = True          # the server clipped it at backlog.CLIP
+    if plan:
+        # Somebody wrote a design or acceptance criteria for this one. The board marks
+        # it; the pane draws it, out of prose() rather than out of the panel.
+        out["plan"] = True
     return out
 
 
@@ -102,6 +106,121 @@ def _backlog_rig(label, rows, scaffolding=0):
             # Drawn by the same code the live read draws with, off the same beads, so
             # demo exercises the layout rather than a picture of a picture.
             "graphs": graph.build(rows)}
+
+
+def prose(backlog_block):
+    """The Board tab's planning pane, seeded. This is NOT part of fixtures() — the
+    prose rides beside the backlog panel rather than in it (see backlog.py), so it is
+    seeded through backlog.load_prose() instead, and fixtures() keeps returning exactly
+    the keys in READS. It is handed the backlog fixture because the live table's key set
+    is every carried bead, prose or not: a bead with nothing written on it must answer
+    "nothing written down" and not "not carried", so the blanks are filled in below off
+    the same beads the board will draw.
+
+    Four cases here are load-bearing, and they are the ones the bead asks demo to show:
+
+      wp-110  an epic with nineteen children, whose description runs past the clip the
+              panel carries — so the pane visibly holds more than the card does.
+      wp-120  a card carrying BOTH a proposed plan and acceptance criteria, which is
+              the pair the pane exists for.
+      wp-122  a blocked card, so the pane's blocked-by list has something real above
+              prose that says what the block is actually about.
+      wp-90   closed with a reason, and notes underneath it — the retro case.
+
+    Most beads carry nothing, which is also true of most real beads: the pane says so
+    rather than drawing four empty headings."""
+    written = {
+        "town": {
+            "hq-51c": {
+                "desc": "Three rigs want to cut a release in the same week and two of "
+                        "them share a dependency. Freeze order matters.",
+                "acceptance": "A written order of freeze, agreed by each rig's witness, "
+                              "with the shared dependency named explicitly.",
+            },
+        },
+        "web_platform": {
+            "wp-110": {
+                "desc": "Six button variants exist across the app, and two of them "
+                        "differ only in a border radius nobody chose deliberately. "
+                        "Every new screen picks one at random, so the difference is "
+                        "load-bearing in a handful of places and cosmetic in the rest "
+                        "— which is why this cannot be a find-and-replace.\n\n"
+                        "The work is to land two variants, primary and quiet, behind "
+                        "shared tokens, and then migrate call sites screen by screen "
+                        "rather than in one sweep, so any regression is always "
+                        "traceable to a single screen's diff.\n\n"
+                        "Scope explicitly excludes the marketing site, which has its "
+                        "own design system and its own team.",
+                "design": "Tokens first (wp-142), then repoint the shared Button "
+                          "component at them (wp-141), then migrate screens, then "
+                          "delete the dead variants last (wp-140). Deleting first "
+                          "would strand every unmigrated screen.",
+                "acceptance": "Two variants remain in the component library; no screen "
+                              "imports a deleted variant; the visual diff on each "
+                              "migrated screen is reviewed by its owner.",
+            },
+            "wp-120": {
+                "desc": "A session cookie survives a privilege change, so a token "
+                        "minted before an account was granted admin still carries the "
+                        "old claims until it expires.",
+                "design": "Rotate on every privilege transition rather than on "
+                          "elevation only — demotion is the case that actually leaks, "
+                          "and it is the one nobody writes the test for. The rotation "
+                          "hook goes in the session middleware, not in each caller.",
+                "acceptance": "A privilege change issues a new session id; the old id "
+                              "is rejected immediately; a test covers demotion as well "
+                              "as elevation.",
+                "notes": "Toast: middleware hook is in. Writing the demotion test now.",
+            },
+            "wp-122": {
+                "desc": "Checkout retries can double-charge when the network drops "
+                        "between the authorisation and the confirmation.",
+                "acceptance": "A replayed retry with the same idempotency key returns "
+                              "the first result rather than charging twice.",
+                "notes": "Waiting on wp-120: the key is derived from the session id, "
+                         "so the rotation has to land first or the key changes under "
+                         "the retry.",
+            },
+            "wp-90": {
+                "reason": "Closed without a change: the second copy is the one every "
+                          "screen imports, and the 'original' has no call sites left.\n"
+                          "Deleting the original instead — filed as wp-111.",
+                "notes": "Checked all 41 import sites by hand before closing this. The "
+                         "two copies had drifted: the 'original' still parsed two-digit "
+                         "years, which is why nothing imports it.",
+            },
+        },
+        "billing_api": {
+            "ba-30": {
+                "desc": "Three separate reports of totals drifting by a cent, all of "
+                        "them on refunds split across two payment methods. Treat the "
+                        "rounding rule as the deliverable, not each symptom.",
+                "design": "One rounding rule, applied at the ledger boundary rather "
+                          "than per payment method. Each method rounding its own share "
+                          "is what produces the drift.",
+                "acceptance": "A split refund reconciles to the cent against the "
+                              "ledger for every split the fixtures cover.",
+            },
+            "ba-40": {
+                "desc": "Reconcile the split-refund rounding against the ledger and "
+                        "write down which side is authoritative.",
+                "notes": "Toast: the ledger is authoritative. Two of the three reports "
+                         "are the same bug seen from different currencies.",
+            },
+        },
+        "mobile_app": {
+            "ma-18": {
+                "desc": "Push tokens are not re-registered after a device restore, so "
+                        "a restored phone silently stops receiving notifications.",
+                "notes": "Marked blocked by hand — waiting on the platform team to say "
+                         "whether the restore hook fires at all on Android 14. No bead "
+                         "to point at yet.",
+            },
+        },
+    }
+    return {r["rig"]: {b["id"]: written.get(r["rig"], {}).get(b["id"], {})
+                       for b in r["beads"]}
+            for r in backlog_block["rigs"]}
 
 
 def _tracked(id_, title, status, assignee=""):
@@ -329,7 +448,7 @@ def fixtures():
     backlog = {"rigs": [
         _backlog_rig("town", [
             _bead("hq-51c", "Draft the cross-rig freeze plan for the release", "feature",
-                  1, "in_progress", assignee="mayor/", minutes=3),
+                  1, "in_progress", assignee="mayor/", plan=True, minutes=3),
             _bead("hq-e2u", "Patrol wisps invisible to hook reporting", "bug", 1, hours=1),
             _bead("hq-48m", "Adopting an existing repo skips provisioning", "bug", 2, hours=6),
             _bead("hq-33p", "Escalations were mailed twice on every retry", "bug", 1,
@@ -338,14 +457,15 @@ def fixtures():
         ], scaffolding=2),
         _backlog_rig("web_platform", [
             _bead("wp-110", "Design system: consolidate 6 button variants into 2", "epic",
-                  2, desc=wp_epic, more=True, hours=9),
+                  2, desc=wp_epic, more=True, plan=True, hours=9),
             _bead("wp-120", "Rotate the session cookie on privilege change", "bug", 1,
                   "hooked", parent="wp-110", assignee="web_platform/polecats/Toast",
-                  minutes=6),
+                  plan=True, minutes=6),
             _bead("wp-121", "Consolidate the button variants behind shared tokens", "task",
                   2, "hooked", parent="wp-110", assignee="web_platform/Slit", minutes=52),
             _bead("wp-122", "Checkout retry needs the new idempotency key", "task", 2,
-                  "blocked", parent="wp-110", blocked_by=["wp-120"], hours=4),
+                  "blocked", parent="wp-110", blocked_by=["wp-120"], plan=True,
+                  hours=4),
             _bead("wp-111", "Replace hand-rolled date parsing with the shared helper",
                   "task", 3, parent="wp-110", blocked_by=["wp-98"], hours=20),
             # A chain of three under one epic: wp-141 cannot start until wp-142 does,
@@ -389,7 +509,7 @@ def fixtures():
             _bead("ba-30", "Ledger correctness for split refunds", "epic", 1,
                   desc="Three separate reports of totals drifting by a cent, all of them "
                   "on refunds split across two payment methods. Treat the rounding rule "
-                  "as the deliverable, not each symptom.", hours=1),
+                  "as the deliverable, not each symptom.", plan=True, hours=1),
             _bead("ba-40", "Reconcile split-refund rounding against the ledger", "bug", 0,
                   "in_progress", parent="ba-30", assignee="billing_api/Toast", minutes=22),
             _bead("ba-31", "Invoice totals drift by a cent on split refunds", "bug", 0,

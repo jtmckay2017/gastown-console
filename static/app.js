@@ -74,6 +74,18 @@ const state = {
   // there), and its own expansion set, keyed by bead id. One set across all four of
   // its sections — a bead expanded as an epic is the same bead expanded as a closure.
   bq: "", brig: "all", beads: new Set(),
+  // The Board tab. Its own filter pair again — it draws the same beads as the Backlog
+  // tab through a different question, and a shared filter box would mean answering one
+  // of them changed the other. `lanes` holds the COLLAPSED swimlanes rather than the
+  // open ones, because a board that started with every epic shut would be an empty
+  // page; `boardMore` is the cells that have been asked for their whole contents.
+  boardq: "", boardRig: "all", boardFlat: false,
+  lanes: new Set(), boardMore: new Set(),
+  // The focused card, and the prose behind it. The prose is not in the snapshot — see
+  // backlog.py — so it is fetched per selection and kept here under the key it was
+  // fetched for, which is what makes a late response for a card nobody is looking at
+  // any more discardable rather than confusing.
+  sel: null, selData: null,
   // The map's last markup. The pictures are the biggest subtree on the page and they
   // scroll inside their own boxes, so they are only rewritten when they change — see
   // renderMap.
@@ -166,6 +178,7 @@ function render() {
   renderPriority();
   renderChangelog();
   renderWorkView();
+  renderBoard();
   renderBacklog();
   renderAgents(status);
   renderMail();
@@ -708,21 +721,31 @@ const isClosed = (b) => String(b.status || "").toLowerCase() === "closed";
 /** The selected slice of the backlog read, plus the two indexes every section below
     needs: id -> bead, and parent id -> its children. Built once per render so no two
     sections can disagree about the shape of the tree. */
-function backlogModel() {
+function backlogModel(brig) {
   const rigs = ((dataOf("backlog", {}) || {}).rigs) || [];
-  const sel = rigs.filter((r) => state.brig === "all" || r.rig === state.brig);
+  const sel = rigs.filter((r) => brig === "all" || r.rig === brig);
   const items = sel.flatMap((r) => (r.beads || []).map((b) => ({ ...b, rig: r.rig })));
   const byId = new Map(items.map((b) => [b.id, b]));
   // The children actually carried, which is not the same as the children that exist —
   // see `kids` on a parent bead for the true count (backlog.py). This map is what the
   // expansion can draw; that number is what the row is allowed to claim.
   const children = new Map();
+  // The blocks edges read the other way: who is waiting on this bead. Nothing stores
+  // that direction — `bd` keeps the edge on the blocked bead — so "what does closing
+  // this unblock" is only answerable by inverting the map, which the planning pane asks
+  // and no list on the Backlog tab does.
+  const dependents = new Map();
   for (const b of items) {
-    if (!b.parent) continue;
-    if (!children.has(b.parent)) children.set(b.parent, []);
-    children.get(b.parent).push(b);
+    if (b.parent) {
+      if (!children.has(b.parent)) children.set(b.parent, []);
+      children.get(b.parent).push(b);
+    }
+    for (const id of b.blocked_by || []) {
+      if (!dependents.has(id)) dependents.set(id, []);
+      dependents.get(id).push(b);
+    }
   }
-  return { rigs, sel, items, byId, children };
+  return { rigs, sel, items, byId, children, dependents };
 }
 
 /** What a bead is waiting on, resolved against the same view. backlog.py pulls every
@@ -744,9 +767,12 @@ const IN_FLIGHT = new Set(["in_progress", "hooked"]);
 const beadDot = (m, b) => (isClosed(b) ? "done" : isBlocked(m, b) ? "off"
   : IN_FLIGHT.has(String(b.status || "").toLowerCase()) ? "busy" : "");
 
-const beadMatches = (b) => !state.bq
+/** The text filter, over the fields a bead is searched by. The query is an argument
+    rather than a global because two tabs now draw these beads through their own filter
+    box — never called bare from a .filter(), where the index would arrive as `q`. */
+const beadMatches = (b, q) => !q
   || `${b.id} ${b.title} ${b.assignee || ""} ${b.issue_type || ""} ${b.rig || ""}`
-    .toLowerCase().includes(state.bq);
+    .toLowerCase().includes(q);
 
 const beadDetailId = (id) => `bead-detail-${String(id).replace(/[^a-zA-Z0-9]+/g, "-")}`;
 const TRUNC = '<div class="bead-trunc">The server clipped this text — run '
@@ -829,7 +855,8 @@ function renderEpics(m) {
   const all = m.items.filter((b) => num(b.kids));
   // An epic matches if it matches or any of its children does. Filtering a tree on the
   // parent alone hides the row somebody was searching for inside a collapsed one.
-  const hits = all.filter((b) => beadMatches(b) || (m.children.get(b.id) || []).some(beadMatches));
+  const hits = all.filter((b) => beadMatches(b, state.bq)
+    || (m.children.get(b.id) || []).some((k) => beadMatches(k, state.bq)));
   // Open first, closed after — a finished epic is history, not plan. byNewest runs
   // first and byKey is stable, so newest-first survives inside each group.
   const items = byKey(byNewest(hits, BEAD_DATE), (b) => (isClosed(b) ? "1" : "0"));
@@ -854,7 +881,7 @@ function renderEpics(m) {
 
 function renderBlocked(m) {
   const all = m.items.filter((b) => isBlocked(m, b));
-  const items = byNewest(all.filter(beadMatches), BEAD_DATE);
+  const items = byNewest(all.filter((b) => beadMatches(b, state.bq)), BEAD_DATE);
   $("#blocked-count").textContent = !all.length ? ""
     : items.length === all.length ? `${all.length} stuck` : `${items.length} of ${all.length}`;
   $("#blocked").innerHTML = items.length ? items.map((b) => {
@@ -877,7 +904,7 @@ function renderBacklogFlight() {
   const ix = agentIndex(allAgents(dataOf("status", {}) || {}));
   const ctx = agentCtx();
   const all = fm.items.filter((b) => state.brig === "all" || b.rig === state.brig);
-  const items = all.filter(beadMatches);
+  const items = all.filter((b) => beadMatches(b, state.bq));
   $("#progress-count").textContent = !all.length ? ""
     : items.length === all.length ? `${all.length} in flight` : `${items.length} of ${all.length}`;
   $("#backlog-flight").innerHTML = errNote("flight") + (items.length
@@ -892,7 +919,7 @@ const CLOSED_ROWS = 40;
 
 function renderClosed(m) {
   const all = byNewest(m.items.filter(isClosed), CLOSED_DATE);
-  const hits = all.filter(beadMatches);
+  const hits = all.filter((b) => beadMatches(b, state.bq));
   const items = hits.slice(0, CLOSED_ROWS);
   // The rigs' own totals, not this list's — the panel is showing a window onto them.
   const held = m.sel.reduce((n, r) => n + num(r.closed_total), 0);
@@ -1026,7 +1053,8 @@ function renderMap(m) {
     }
     for (const e of g.epics || []) {
       const bead = m.byId.get(e.id);
-      if (state.bq && !(bead && beadMatches(bead)) && !kids(e.id).some(beadMatches)) continue;
+      if (state.bq && !(bead && beadMatches(bead, state.bq))
+        && !kids(e.id).some((k) => beadMatches(k, state.bq))) continue;
       trees.push(figure(`${r.rig} · ${e.id}`,
         [`${e.kids} children`, e.drawn < e.kids ? `${e.drawn} drawn` : "",
           e.blocked ? `${e.blocked} blocked` : "nothing blocked"].filter(Boolean).join(" · "),
@@ -1059,7 +1087,7 @@ function renderBacklog() {
   // The selected rig can vanish under the tab — unregistered, parked out of the status
   // read, or a repo that stopped answering. Fall back rather than draw an empty page.
   if (state.brig !== "all" && !rigs.some((r) => r.rig === state.brig)) state.brig = "all";
-  const m = backlogModel();
+  const m = backlogModel(state.brig);
   // The 8s auto-refresh rebuilds these subtrees; expansion lives in state.beads so it
   // survives, and the focused row is restored so keyboard focus does not jump to <body>.
   const focused = document.activeElement?.dataset?.bead;
@@ -1120,6 +1148,477 @@ $("#view-backlog").addEventListener("click", (ev) => {
   if (!row) return;
   if (!state.beads.delete(row.dataset.bead)) state.beads.add(row.dataset.bead);
   renderBacklog();
+});
+
+/* ---------------- board ----------------
+   The same beads again, and the third question about them. The Work tab asks what is
+   happening, the Backlog tab asks what was planned, and both answer in lists — which is
+   the wrong shape for the question a review actually opens with, "where is everything".
+   A list can only be sorted by one thing at a time; a board shows the state machine at
+   once, and the interesting cells are the ones nobody has to scroll to find.
+
+   FOUR THINGS ARE DELIBERATE HERE.
+
+   Columns are beads' OWN statuses. Not a vocabulary of ours mapped onto them — the
+   store already has open / hooked / in_progress / blocked / deferred / closed and every
+   one of them means something the town set. A console that invented "To do / Doing /
+   Done" over the top would be a second spelling of a fact that already has one, which is
+   the failure class gc-5u3 was filed to avoid. Anything this town uses that the table
+   below does not name gets a column of its own rather than being folded into "other".
+
+   BLOCKED IS ALWAYS A COLUMN, even when it is empty. It is the thing a ceremony most
+   needs and the thing the Work tab structurally cannot show — `gt ready` is
+   unblocked-and-open by definition — so it does not get to be absent on a good day and
+   appear on a bad one. Same for open, in progress and closed: the four corners of the
+   machine are fixed, so the shape of the board means something across rigs and days.
+
+   Swimlanes are the parent-child edges, one lane per parent that has a card on the
+   board. Nothing is grouped by anything the console decided — a lane exists because
+   somebody filed those beads under that epic. The biggest epic in this town has 19
+   children; a lane is a grid rather than a row of stacks so 19 spreads across six
+   columns instead of into one very long one, and each cell still holds only a screenful
+   before it says how many it is not showing.
+
+   BLOCKED-BY IS ON THE CARD, not behind it. A card that cannot move says what is
+   holding it, in the column, without being opened — that sentence is the entire reason
+   the blocked column is worth having, and putting it under a fold would mean the board
+   showed you the problem and hid the cause.
+
+   The pane is the focused half, and it is a docked panel rather than the inline
+   expansion the Backlog tab uses (gc-6gp). Same idea, different room: a column is 200px
+   wide and the fields the pane exists for — gathered context, proposed plan, acceptance
+   criteria — are paragraphs. Expanding one inside a column would either reflow the whole
+   board on every click or render prose in a 200px gutter. It is docked, not modal:
+   no overlay, no scrim, no focus trap, the board stays live and legible beside it, and
+   on a narrow screen it simply stacks underneath. Read-only, like everything else here
+   — the pane shows the plan, and approving one is somebody else's bead (gc-dzd).
+
+   Its prose does not come from the snapshot. See backlog.py: carrying four long fields
+   for every bead would have doubled the panel every poll for a pane that reads one, so
+   the backlog refresh keeps them beside the panel and `GET /api/bead` hands over the one
+   that is open. Everything else on this tab is the cached `backlog` panel, unchanged. */
+
+/* Reading order is the order work moves in, which is not the order `bd` lists statuses.
+   The four in ALWAYS are drawn whether or not anything is in them — see above. */
+const BOARD_COLUMNS = [
+  { key: "open",        label: "Open",        hint: "filed, nobody on it" },
+  { key: "hooked",      label: "On a hook",   hint: "slung to an agent — this town's usual shape" },
+  { key: "in_progress", label: "In progress", hint: "claimed and moving" },
+  { key: "blocked",     label: "Blocked",     hint: "cannot move until something else does" },
+  { key: "deferred",    label: "Deferred",    hint: "parked on purpose" },
+  { key: "closed",      label: "Closed",      hint: "finished" },
+];
+const BOARD_ALWAYS = new Set(["open", "in_progress", "blocked", "closed"]);
+// Per cell, before it stops drawing and says how many it is holding back. A 19-child
+// epic must not turn one column into a page of its own.
+const BOARD_CARDS = 8;
+/* Two identifiers name a card — a rig and a bead id — and they travel differently.
+   In state they are one key; in markup they are two data attributes, because a
+   separator inside an attribute is a bug waiting for the first id that contains it, and
+   the obvious separator is worse than that: the HTML parser rewrites a NUL in an
+   attribute value to U+FFFD, so a key built with one would not survive the round trip
+   at all. JSON is the key here — no separator to collide with, and printable, which
+   this file has already paid for once (gc-53s). */
+const key2 = (rig, id) => JSON.stringify([rig || "", id]);
+const boardKey = (b) => key2(b.rig, b.id);
+const selKey = () => (state.sel ? key2(state.sel.rig, state.sel.id) : "");
+const cardAttrs = (b) => `data-card="${esc(b.id)}" data-rig="${esc(b.rig || "")}"`;
+const beadStatus = (b) => String(b.status || "").toLowerCase() || "?";
+
+/** The columns this board draws: the four fixed ones, the rest of the known order where
+    the beads use it, and then anything else the store came back with — a status the
+    console has never heard of is a column, not a silent omission. */
+function boardColumns(cards) {
+  const seen = new Set(cards.map(beadStatus));
+  const known = BOARD_COLUMNS.filter((c) => BOARD_ALWAYS.has(c.key) || seen.has(c.key));
+  const extra = [...seen].filter((k) => !BOARD_COLUMNS.some((c) => c.key === k)).sort()
+    .map((k) => ({ key: k, label: k, hint: "a status this console does not name" }));
+  return [...known, ...extra];
+}
+
+/** One card. Everything on it is either structure the panel carries or a sentence the
+    column would be useless without — the blocked line especially, which is the half of
+    "blocked" that a status word alone never says. */
+function boardCard(m, b) {
+  const unmet = unmetOf(m, b);
+  const sel = selKey() === boardKey(b);
+  const hand = !unmet.length && beadStatus(b) === "blocked";
+  const kids = num(b.kids);
+  // Badges on their own line, the id down in the sub with the rest of the metadata —
+  // the convention every other row in this app already follows, and the one a 200px
+  // column forces anyway: this town's ids run to 23 characters, so an id sharing the top
+  // line with two badges takes three lines of a card to say nothing the title does not.
+  const tags = [
+    b.plan ? '<span class="bcard-plan" title="carries a design or acceptance criteria">plan</span>' : "",
+    b.issue_type && b.issue_type !== "task"
+      ? `<span class="badge ${b.issue_type === "epic" ? "epic" : ""}">${esc(b.issue_type)}</span>` : "",
+    b.priority == null ? "" : `<span class="badge p${esc(b.priority)}">P${esc(b.priority)}</span>`,
+  ].filter(Boolean).join("");
+  return `
+    <button type="button" class="bcard ${isClosed(b) ? "is-done" : ""} ${sel ? "is-sel" : ""}"
+            ${cardAttrs(b)} aria-pressed="${sel}">
+      ${tags ? `<span class="bcard-tags">${tags}</span>` : ""}
+      <span class="bcard-title">${esc(b.title)}</span>
+      <span class="bcard-sub">
+        <span class="mono bcard-id">${esc(b.id)}</span>
+        ${b.assignee ? `<span class="bcard-who">${esc(b.assignee)}</span>` : ""}
+        <span>${esc(ago(pick(b, isClosed(b) ? CLOSED_DATE : BEAD_DATE)))}</span>
+      </span>
+      ${kids ? `<span class="bcard-kids">${num(b.kids_closed)} of ${kids} children closed</span>` : ""}
+      ${unmet.length ? `<span class="bcard-blocked">blocked by ${
+    esc(unmet.map((x) => x.id).join(", "))}</span>` : ""}
+      ${hand ? '<span class="bcard-blocked">marked blocked by hand — no blocking bead</span>' : ""}
+    </button>`;
+}
+
+/** One lane's cell in one column. The cap is per cell rather than per lane so a crowded
+    column cannot bury a quiet one beside it, and what it holds back is stated. */
+function boardCell(m, lane, col, cards) {
+  const open = state.boardMore.has(key2(lane, col.key));
+  const drawn = open ? cards : cards.slice(0, BOARD_CARDS);
+  const rest = cards.length - drawn.length;
+  return `<div class="bcol ${cards.length ? "" : "is-empty"}">
+    ${drawn.map((b) => boardCard(m, b)).join("")}
+    ${rest > 0 || (open && cards.length > BOARD_CARDS)
+    ? `<button type="button" class="bcol-more" data-more="${esc(col.key)}"
+               data-more-lane="${esc(lane)}">${
+      rest > 0 ? `+${rest} more` : "show fewer"}</button>` : ""}
+  </div>`;
+}
+
+/** One swimlane: an epic across the top, its cards in the columns below. Two controls
+    side by side for the same reason an agent row has two — collapsing a lane and reading
+    its plan are different intentions, and buttons do not nest. Both are content-sized
+    and pinned to the left edge: a lane is as wide as the whole board, so anything that
+    floated to its right-hand end would be off screen exactly when somebody has scrolled
+    out to the columns that made them want it. */
+function laneHead(m, head, cards) {
+  const collapsed = state.lanes.has(head.id);
+  const total = num(head.kids), done = num(head.kids_closed);
+  const sel = selKey() === boardKey(head);
+  return `
+    <div class="lane-bar">
+      <button type="button" class="lane-toggle" data-lane="${esc(head.id)}"
+              aria-expanded="${!collapsed}"
+              aria-label="${collapsed ? "Expand" : "Collapse"} this epic">
+        <svg viewBox="0 0 24 24" class="ico chev" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+      </button>
+      <button type="button" class="lane-head ${sel ? "is-on" : ""}" ${cardAttrs(head)}
+              aria-pressed="${sel}" title="Open this epic in the planning pane">
+        <span class="lane-main">
+          <span class="lane-title">${esc(head.title)}</span>
+          <span class="sub">
+            <span class="mono">${esc(head.id)}</span>
+            <span>${esc(head.rig || "")}</span>
+            <span class="badge ${isClosed(head) ? "ok" : beadStatus(head) === "blocked" ? "bad" : ""}">${esc(beadStatus(head))}</span>
+            <span>${cards.length} on the board${total ? ` · ${done} of ${total} closed` : ""}</span>
+            ${head.parent ? `<span class="mono">↳ under ${esc(head.parent)}</span>` : ""}
+          </span>
+          ${total ? `<span class="bar-track lane-bar-track"><span class="bar-fill"
+            style="width:${Math.round((done / total) * 100)}%;background:${
+  done === total ? "var(--green)" : "var(--blue)"}"></span></span>` : ""}
+        </span>
+      </button>
+    </div>`;
+}
+
+/** The board, as lanes over one shared set of columns. Every grid below uses the same
+    template, so the tracks line up down the page and one horizontal scroll moves all of
+    them — which is why the columns are named once at the top rather than per lane. */
+function boardHtml(m, lanes, cols) {
+  const style = `--bn:${cols.length}`;
+  // The column rule is coloured off the same allowlist the distribution bars use — the
+  // value lands inside a style attribute, so it is never data-derived.
+  const head = `<div class="board-row board-head" style="${style}">${cols.map((c) => `
+    <div class="bcol-head" title="${esc(c.hint)}"
+         style="border-bottom-color:${STATUS_COLOR[c.key] || "var(--border)"}">
+      <span class="bcol-label">${esc(c.label)}</span>
+      <span class="bcol-n">${lanes.reduce((n, l) => n + (l.cols.get(c.key) || []).length, 0)}</span>
+    </div>`).join("")}</div>`;
+  const body = lanes.map((l) => {
+    const collapsed = l.head && state.lanes.has(l.head.id);
+    const cells = collapsed ? "" : `<div class="board-row lane-cols" style="${style}">${
+      cols.map((c) => boardCell(m, l.id, c, l.cols.get(c.key) || [])).join("")}</div>`;
+    const bar = l.head ? laneHead(m, l.head, l.cards)
+      : lanes.length > 1 ? `<div class="lane-bar"><div class="lane-loose muted">
+          Under no epic · ${l.cards.length}</div></div>` : "";
+    return `<section class="lane">${bar}${cells}</section>`;
+  }).join("");
+  return `<div class="board-inner">${head}${body}</div>`;
+}
+
+/** Which beads are on the board, and how they fall into lanes. A parent heads a lane
+    because one of its children is on the board — never because it is typed "epic", the
+    same rule the Epics section uses, since this town has parents typed feature and
+    decision. A lane head is not also a card in its own lane. */
+function boardModel(m) {
+  const inRig = m.items.filter((b) => state.boardRig === "all" || b.rig === state.boardRig);
+  const shown = inRig.filter((b) => beadMatches(b, state.boardq));
+  // A lane head is not a card in its own lane, so the number of cards is smaller than
+  // the number of beads whether or not anything is filtered. Counted the same way on
+  // both sides for that reason — "36 of 38" when nothing is filtered would read as a
+  // filter that is on, which is the one thing the count is there to tell you about.
+  const split = (rows) => {
+    const laneIds = state.boardFlat ? new Set()
+      : new Set(rows.map((b) => b.parent).filter((p) => p && m.byId.has(p)));
+    return { laneIds, cards: rows.filter((b) => !laneIds.has(b.id)) };
+  };
+  const { laneIds, cards } = split(shown);
+  const total = shown.length === inRig.length ? cards.length : split(inRig).cards.length;
+
+  const buckets = new Map([["", []]]);
+  for (const b of cards) {
+    const key = laneIds.has(b.parent) ? b.parent : "";
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(b);
+  }
+  const order = (b) => `${isClosed(b) ? "1" : "0"} ${String(9999 - num(b.kids)).padStart(5, "0")} ${b.id}`;
+  const lanes = byKey([...buckets.keys()].filter(Boolean).map((id) => ({ id, head: m.byId.get(id) })),
+    (l) => order(l.head)).map((l) => ({ ...l, cards: buckets.get(l.id) }));
+  // Loose beads last: they are what has not been placed in a plan, which is a useful
+  // thing to see at the bottom and a useless thing to lead with.
+  if (buckets.get("").length || !lanes.length) lanes.push({ id: "", head: null, cards: buckets.get("") });
+
+  for (const l of lanes) {
+    l.cols = new Map();
+    for (const b of byNewest(l.cards, BEAD_DATE)) {
+      const k = beadStatus(b);
+      if (!l.cols.has(k)) l.cols.set(k, []);
+      l.cols.get(k).push(b);
+    }
+  }
+  return { shown, cards, total, lanes };
+}
+
+function renderBoard() {
+  const full = backlogModel("all");
+  // The pill counts the whole town, not the chip selection — blocked work is the thing
+  // this tab exists to surface, and a count that moved when you filtered would be
+  // reporting the filter. It is also the one number the Work tab structurally cannot
+  // show, which is why it rides on the tab rather than inside it.
+  const stuck = full.items.filter((b) => isBlocked(full, b)).length;
+  const pill = $("#pill-board");
+  pill.textContent = stuck;
+  pill.classList.toggle("hot", stuck > 0);
+
+  renderBoardChips(full);
+  if (loadingOf("backlog")) {
+    $("#board").innerHTML = SKEL;
+    $("#board-meta").textContent = "";
+    paintPane(full);
+    return;
+  }
+  // The selected rig can vanish under the tab, the same way it can under the Backlog
+  // tab — unregistered, parked out of the status read, or a repo that stopped answering.
+  if (state.boardRig !== "all" && !full.rigs.some((r) => r.rig === state.boardRig)) {
+    state.boardRig = "all";
+    renderBoardChips(full);
+  }
+  const bm = boardModel(full);
+  const cols = boardColumns(bm.cards);
+  const blocked = bm.cards.filter((b) => isBlocked(full, b)).length;
+  const laneCount = bm.lanes.filter((l) => l.head).length;
+  const filtered = bm.cards.length !== bm.total;
+  $("#board-meta").textContent = [
+    `${filtered ? `${bm.cards.length} of ${bm.total}` : bm.cards.length} card${
+      (filtered ? bm.total : bm.cards.length) === 1 ? "" : "s"}`,
+    // Meaningless with swimlanes off, and a "0 epics" beside "swimlanes off" reads as
+    // a town with no plan rather than as a board that was asked not to draw them.
+    state.boardFlat ? "swimlanes off" : `${laneCount} epic${laneCount === 1 ? "" : "s"}`,
+    blocked ? `${blocked} blocked` : "nothing blocked",
+    state.sel ? "" : "pick a card to read its plan",
+  ].filter(Boolean).join(" · ");
+
+  // The board scrolls in both directions and is rebuilt by the 8s poll, so its scroll
+  // position and the focused card are saved across the rewrite — otherwise reading a
+  // lane on the right-hand columns is impossible while auto-refresh is on.
+  const el = $("#board");
+  const keep = { l: el.scrollLeft, t: el.scrollTop };
+  const focused = document.activeElement?.dataset;
+  const want = focused?.card || focused?.lane || focused?.more;
+  el.innerHTML = errNote("backlog") + (bm.cards.length ? boardHtml(full, bm.lanes, cols)
+    : empty(bm.total ? "No card matches that filter" : "No backlog has been read yet"));
+  el.scrollLeft = keep.l;
+  el.scrollTop = keep.t;
+  if (want) {
+    $$("#board [data-card], #board [data-lane], #board [data-more]")
+      .find((n) => (n.dataset.card || n.dataset.lane || n.dataset.more) === want)?.focus();
+  }
+  paintPane(full);
+}
+
+function renderBoardChips(m) {
+  const names = byKey(m.rigs.map((r) => r.rig), (n) => (n === "town" ? "0" : "1" + n));
+  $("#board-chips").innerHTML = [["all", "All rigs"], ...names.map((n) => [n, n])]
+    .map(([k, label]) => `<button class="chip ${state.boardRig === k ? "is-active" : ""}"
+      data-brrig="${esc(k)}">${esc(label)}</button>`).join("")
+    + `<button class="chip ${state.boardFlat ? "" : "is-active"}" data-lanes="on">Swimlanes</button>`
+    + `<button class="chip ${state.boardFlat ? "is-active" : ""}" data-lanes="off">Flat</button>`;
+  $$("#board-chips [data-brrig]").forEach((b) =>
+    (b.onclick = () => { state.boardRig = b.dataset.brrig; renderBoard(); }));
+  $$("#board-chips [data-lanes]").forEach((b) =>
+    (b.onclick = () => { state.boardFlat = b.dataset.lanes === "off"; renderBoard(); }));
+}
+
+/* ---- the planning pane ---- */
+
+/** A list of other beads the pane points at — what this one waits on, what waits on it,
+    what sits under it. Each row selects that bead, so the pane walks the graph the card
+    only names. A blocker backlog.py could not resolve is drawn as text rather than as a
+    link: there is nothing to open. */
+function paneRefs(m, label, hint, rows) {
+  if (!rows.length) return "";
+  return `<div class="pane-refs">
+    <div class="pane-label">${esc(label)} <span class="muted">${esc(hint)}</span></div>
+    ${rows.map((b) => (b.rig ? `
+      <button type="button" class="pane-link" ${cardAttrs(b)}>
+        <i class="dot ${beadDot(m, b)}"></i>
+        <span class="pane-link-main">
+          <span class="mono">${esc(b.id)}</span>
+          <span class="pane-link-title">${esc(b.title)}</span>
+        </span>
+        <span class="badge ${isClosed(b) ? "ok" : beadStatus(b) === "blocked" ? "bad" : ""}">${esc(beadStatus(b))}</span>
+      </button>` : `
+      <div class="pane-link is-flat">
+        <span class="pane-link-main"><span class="mono">${esc(b.id)}</span>
+        <span class="pane-link-title">${esc(b.title)}</span></span>
+      </div>`)).join("")}
+  </div>`;
+}
+
+/** The prose half, out of `GET /api/bead` rather than out of the snapshot. Four states
+    and all four are drawn: not asked yet, in flight, failed, and the common one — a
+    bead nobody has written a plan on, which must read as "nothing here" rather than as
+    four empty headings. */
+function paneProse(key) {
+  const d = state.selData && state.selData.key === key ? state.selData : null;
+  if (!d || d.loading) return '<div class="pane-wait">reading the bead…</div>';
+  if (d.error) return `<div class="error-note">${esc(d.error)}</div>`;
+  const p = d.data || {};
+  const blocks = [["Gathered context", p.desc], ["Proposed plan", p.design],
+    ["Acceptance criteria", p.acceptance], ["Notes", p.notes],
+    ["Why it closed", p.reason]].filter(([, v]) => v);
+  if (!blocks.length) {
+    return empty("Nothing written down on this bead — no description, plan or criteria");
+  }
+  return blocks.map(([k, v]) => beadText(k, v)).join("");
+}
+
+function paneHtml(m) {
+  // Nothing selected is nothing drawn: a permanently docked empty panel would cost the
+  // board a third of its width to say "pick something". The invitation is one line in
+  // the meta above the board instead, where it costs nothing.
+  if (!state.sel) return "";
+  const key = selKey();
+  const b = m.byId.get(state.sel.id);
+  const head = `<div class="pane-head">
+    <span class="pane-eyebrow muted">Planning</span>
+    <button type="button" class="btn icon-only pane-close" data-close-pane="1"
+            title="Close the pane" aria-label="Close the planning pane">
+      <svg viewBox="0 0 24 24" class="ico" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+    </button>
+  </div>`;
+  if (!b) {
+    return head + `<div class="pane-body">${empty(
+      `${state.sel.id} is not in the backlog the console last read`)}</div>`;
+  }
+  const kids = byKey(byNewest(m.children.get(b.id) || [], BEAD_DATE), (k) => (isClosed(k) ? "1" : "0"));
+  const waiting = (m.dependents.get(b.id) || []);
+  const stuck = blockersOf(m, b);
+  const fields = [
+    ["Rig", b.rig], ["Status", beadStatus(b)], ["Type", b.issue_type],
+    ["Priority", b.priority == null ? "" : `P${b.priority}`],
+    ["Assignee", b.assignee || "unassigned"],
+    ["Under", b.parent], ["Children", num(b.kids) ? `${num(b.kids_closed)} of ${num(b.kids)} closed` : ""],
+    ["Updated", ago(pick(b, BEAD_DATE))], ["Closed", isClosed(b) ? ago(pick(b, CLOSED_DATE)) : ""],
+  ].filter(([, v]) => v);
+  return head + `
+    <div class="pane-body">
+      <h3 class="pane-title">${esc(b.title)}</h3>
+      <div class="pane-id"><span class="mono">${esc(b.id)}</span>
+        ${b.plan ? '<span class="bcard-plan">plan</span>' : ""}</div>
+      <dl class="agent-detail pane-fields">${fields.map(([k, v]) =>
+    `<div class="detail-item"><dt>${esc(k)}</dt><dd class="wrap">${esc(v)}</dd></div>`).join("")}</dl>
+      ${paneRefs(m, "Blocked by", "must land first", stuck)}
+      ${paneRefs(m, "Blocks", "waiting on this one", waiting)}
+      ${paneRefs(m, "Children", "under this bead", kids)}
+      <div class="pane-prose">${paneProse(key)}</div>
+    </div>`;
+}
+
+/** The pane alone. Called by renderBoard and by the fetch below, so a landing response
+    repaints one panel instead of rebuilding the whole board under the reader. */
+function paintPane(m) {
+  const el = $("#board-pane");
+  const keep = el.scrollTop;
+  $("#board-layout").classList.toggle("has-pane", !!state.sel);
+  el.innerHTML = paneHtml(m || backlogModel("all"));
+  el.scrollTop = keep;
+}
+
+/** Open a card in the pane, or close it if it is already the open one — the same toggle
+    every other expandable row on this page uses. */
+function selectBead(rig, id) {
+  if (selKey() === key2(rig, id)) return void closePane();
+  state.sel = { rig, id };
+  state.selData = { key: key2(rig, id), loading: true };
+  renderBoard();
+  // Narrow screens stack the pane under a board that is several screens tall, so the
+  // thing you just asked for would open somewhere below the fold. Only when it is
+  // stacked: moving the page under a docked pane would be taking the scroll away from
+  // somebody who is still reading the board beside it. On selection only, never on the
+  // 8s repaint — a page that re-scrolled itself every eight seconds would be unusable.
+  const pane = $("#board-pane");
+  if (getComputedStyle(pane).position === "static") {
+    pane.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+  pullBead();
+}
+function closePane() {
+  state.sel = null;
+  state.selData = null;
+  renderBoard();
+}
+
+/** The one fetch on this tab. It reads a dict the backlog refresh already filled (see
+    backlog.py), so it cannot block on `bd` and does not need a cadence — it is asked
+    once per card opened, and the answer changes only when the backlog read runs. */
+async function pullBead() {
+  const key = selKey();
+  if (!key) return;
+  const { rig, id } = state.sel;
+  try {
+    const r = await fetch(`/api/bead?rig=${encodeURIComponent(rig)}&id=${encodeURIComponent(id)}`,
+      { headers: { Accept: "application/json" } });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const j = await r.json();
+    if (selKey() !== key) return;                 // closed or switched mid-flight
+    state.selData = { key, data: j.data, error: j.error };
+  } catch (e) {
+    if (selKey() !== key) return;
+    state.selData = { key, error: e.message };
+  }
+  paintPane();
+}
+
+$("#board-q").oninput = (e) => { state.boardq = e.target.value.toLowerCase(); renderBoard(); };
+
+// One delegated listener over the whole tab: the board and the pane are both replaced
+// wholesale on every render, and the pane's own links are cards by another name.
+$("#view-board").addEventListener("click", (ev) => {
+  if (ev.target.closest("[data-close-pane]")) return void closePane();
+  const card = ev.target.closest("[data-card]");
+  if (card) return void selectBead(card.dataset.rig, card.dataset.card);
+  const more = ev.target.closest("[data-more]");
+  if (more) {
+    const k = key2(more.dataset.moreLane, more.dataset.more);
+    if (!state.boardMore.delete(k)) state.boardMore.add(k);
+    return void renderBoard();
+  }
+  const lane = ev.target.closest("[data-lane]");
+  if (!lane) return;
+  if (!state.lanes.delete(lane.dataset.lane)) state.lanes.add(lane.dataset.lane);
+  renderBoard();
 });
 
 /* ---------------- agents ----------------
@@ -1495,9 +1994,12 @@ $("#agents").addEventListener("click", (ev) => {
   renderAgents(dataOf("status", {}) || {});
 });
 
-// Escape closes the terminal, the way it closes everything else that covers a page.
+// Escape backs out of whatever is open — the live terminal on the Agents tab, the
+// planning pane on the Board tab — the way it closes everything else on a page.
 document.addEventListener("keydown", (ev) => {
-  if (ev.key === "Escape" && state.watch) toggleWatch(state.watch);
+  if (ev.key !== "Escape") return;
+  if (state.watch) toggleWatch(state.watch);
+  else if (state.sel) closePane();
 });
 
 /** Copy the attach command. The clipboard API needs a secure context, which a console
@@ -1605,7 +2107,7 @@ function renderTrail() {
 /* ---------------- boot ---------------- */
 ["#rigs", "#escalations", "#prio", "#changelog", "#flight", "#convoys", "#work", "#agents",
   "#mail", "#trail", "#epics", "#blocked", "#backlog-flight", "#closed", "#backlog-rigs",
-  "#backlog-status", "#backlog-type"]
+  "#backlog-status", "#backlog-type", "#board"]
   .forEach((s) => ($(s).innerHTML = '<div class="skeleton"></div><div class="skeleton"></div>'));
 load(true);
 schedule();

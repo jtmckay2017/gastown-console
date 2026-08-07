@@ -38,9 +38,31 @@ for. That is 58KB for the same 124 beads.
 The one thing in the payload that is not a bead is `graphs` — those same beads, drawn.
 See graph.py. It is handed the trimmed list rather than the raw one, so a picture can
 never contain a bead the lists beside it do not.
+
+THE PROSE THAT IS NOT IN THE PAYLOAD. The Board tab's planning pane wants the four
+long fields a bead actually carries its thinking in — description, design,
+acceptance_criteria, notes — for whichever single card the operator has open. Putting
+them in the panel is not affordable and measuring says so: on zombie_prototype's 124
+beads those four fields clip to 73KB at CLIP, against the 2KB of epic descriptions the
+panel carries today, so the panel would go from 58KB to ~129KB and every snapshot poll
+would carry it. It would also be the wrong shape — a focused pane reads one bead, and a
+pane that truncated the plan at 400 characters would not be a planning pane at all.
+
+So the prose is kept beside the panel instead of inside it: `bd list --all` already
+fetched it, `_rig()` stashes it whole in `_PROSE`, and `prose()` hands back one bead's
+worth over `GET /api/bead`. That is a dict lookup, not a read — no second `bd` call, no
+cadence of its own, and nothing on the request path that can block. It refreshes when
+this read does, off the same rows in the same pass, so the pane and the board can no
+more disagree than the map and the lists can.
+
+A rig that fails to answer keeps its previous prose, for the reason refresh() keeps a
+failed panel's last good data: a transient `bd` hiccup must not empty a pane that is
+open. And only *carried* beads are stashed, so the caps above bound this table too —
+the pane can only be opened on a card the board drew.
 """
 
 import collections
+import threading
 
 import beads
 import graph
@@ -62,6 +84,38 @@ CLIP = 400
 MAX_OPEN = 300
 MAX_CLOSED = 60
 MAX_TREE = 400
+
+# The pane's fields, as (name the front end draws, name `bd` stores). Whole, not
+# clipped — reading the plan is the point of the pane — but not unbounded either: a
+# pathological bead must not be able to make one HTTP response arbitrarily large.
+PROSE = (("desc", "description"), ("design", "design"),
+         ("acceptance", "acceptance_criteria"), ("notes", "notes"),
+         ("reason", "close_reason"))
+PROSE_MAX = 20000
+# rig -> {bead id -> {field: text}}, swapped per rig by by_rig(). Held beside the panel
+# rather than in it; see the note at the top of this file.
+_PROSE = {}
+_PROSE_LOCK = threading.Lock()
+
+
+def prose(rig, ident):
+    """One carried bead's long fields, as (fields, error) — the shape `GET /api/bead`
+    serves. A dict read: no subprocess, nothing that can block a request."""
+    with _PROSE_LOCK:
+        rows = _PROSE.get(rig)
+        fields = (rows or {}).get(ident)
+    if fields is not None:
+        return dict(fields), None
+    if rows is None:
+        return None, f"no backlog has been read for {rig!r} yet"
+    return None, f"{ident} is not one of the beads this rig's backlog carried"
+
+
+def load_prose(table):
+    """Seed the table wholesale — the demo path, which has no scheduler to fill it."""
+    with _PROSE_LOCK:
+        _PROSE.clear()
+        _PROSE.update(table)
 
 
 def _clip(text):
@@ -99,6 +153,11 @@ def _project(bead, with_desc, kids=None):
     blocked_by = _blockers(bead)
     if blocked_by:
         out["blocked_by"] = blocked_by
+    # Not the plan itself — one bit saying there is one. The Board tab marks a card that
+    # somebody has already thought through, and the pane that opens it is then promising
+    # something it can deliver. A boolean is affordable per bead where the prose is not.
+    if any(str(bead.get(f) or "").strip() for f in ("design", "acceptance_criteria")):
+        out["plan"] = True
     if with_desc:
         out["desc"], more = _clip(bead.get("description"))
         clipped = clipped or more
@@ -107,16 +166,32 @@ def _project(bead, with_desc, kids=None):
     return {k: v for k, v in out.items() if v not in (None, "", [])}
 
 
+def _prose(bead):
+    """Everything the pane reads for one bead, whole. Empty fields are dropped — but an
+    empty result is still an entry, because the key set of this table is exactly "the
+    beads the board drew". A bead nobody wrote anything on is the common case and it has
+    to answer "nothing written down", not "not one of the beads this rig carried", which
+    is the message for a genuinely different thing and would send its reader hunting for
+    a bug in the caps."""
+    out = {}
+    for name, field in PROSE:
+        text = str(bead.get(field) or "").strip()
+        if text:
+            out[name] = text if len(text) <= PROSE_MAX else text[:PROSE_MAX] + "…"
+    return out
+
+
 def _rig(label, repo):
-    """One rig's backlog, as (block, error)."""
+    """One rig's backlog, as (block, prose, error) — the prose being the pane's copy of
+    the long fields, which rides beside the panel rather than in it."""
     rows, err = beads.run_bd(repo, ["list", "--all", "--limit", "0"], timeout=30)
     if err:
-        return None, f"{label}: {err}"
+        return None, None, f"{label}: {err}"
     if not rows:
         # The failure beads.py exists to prevent, caught where it would otherwise be
         # drawn as a rig that has planned nothing. Suspicion, not a silent zero.
-        return None, (f"{label}: bd returned no beads at all — is this rig's database "
-                      "being served?")
+        return None, None, (f"{label}: bd returned no beads at all — is this rig's "
+                            "database being served?")
     work = [b for b in rows if isinstance(b, dict) and b.get("id")
             and b.get("issue_type") not in SKIP_TYPES]
     index = {b["id"]: b for b in work}
@@ -161,9 +236,13 @@ def _rig(label, repo):
     kids = collections.Counter(b["parent"] for b in work if b.get("parent"))
     kids_closed = collections.Counter(b["parent"] for b in work
                                       if b.get("parent") and b.get("status") == "closed")
+    kept = [b for b in live + closed if b["id"] in keep]
     carried = [_project(b, b["id"] in kids,
                         (kids[b["id"]], kids_closed[b["id"]]) if kids[b["id"]] else None)
-               for b in live + closed if b["id"] in keep]
+               for b in kept]
+    # Same beads, same pass, so the pane can only ever open a card the board drew — and
+    # every one of them is a key here, empty or not. See _prose().
+    prose_rows = {b["id"]: _prose(b) for b in kept}
     return {
         "rig": label,
         # Everything the database holds, scaffolding included, so the panel can show
@@ -178,7 +257,7 @@ def _rig(label, repo):
         # The same beads, drawn. It is built here rather than in a read of its own so
         # that the picture and the list can never be a cadence apart — see graph.py.
         "graphs": graph.build(carried),
-    }, None
+    }, prose_rows, None
 
 
 def by_rig(status, town):
@@ -186,11 +265,16 @@ def by_rig(status, town):
     rig whose beads repo cannot be read costs that rig, not the panel."""
     out, failed = [], []
     for label, repo in beads.repos(status, town):
-        block, err = _rig(label, repo)
+        block, prose_rows, err = _rig(label, repo)
         if err:
             failed.append(err)
-        else:
-            out.append(block)
+            continue
+        out.append(block)
+        # Per rig, and only on success: a rig that failed keeps the prose it last
+        # answered with, the same way refresh() keeps a failed panel's last good data.
+        # An open pane must not empty out because one `bd` call timed out.
+        with _PROSE_LOCK:
+            _PROSE[block["rig"]] = prose_rows
     if failed and not out:
         return None, "; ".join(failed[:3])
     return {"rigs": out}, ("; ".join(failed[:3]) if failed else None)

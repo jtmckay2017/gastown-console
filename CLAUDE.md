@@ -27,10 +27,17 @@ not a module; `static/app.css` is hand-written CSS with custom properties.
   `models` panel, see `models.py`; the `panes` panel, see `panes.py`; the `flight` and
   `backlog` panels, see `flight.py` and `backlog.py`). Adding a read means adding a row here,
   nowhere else — a read that does not fit the `gt`-argv shape is a callable, not a second table.
-- HTTP handlers **only read `_cache`**. `GET /api/snapshot` returns every panel plus its age;
+- HTTP handlers **only read memory the scheduler filled** — never a subprocess, never a file,
+  never anything that can be slow. `GET /api/snapshot` returns every panel plus its age;
   `GET /api/panel/<name>` returns one panel in the same shape — the UI uses `/api/snapshot`,
   `POST /api/mail`, and `/api/panel/watch` for the live terminal view, which wants a faster
-  poll than the page render.
+  poll than the page render. `GET /api/bead?rig=&id=` is the one handler that serves
+  something that is not a panel: one bead's long prose for the Board tab's planning pane,
+  out of a dict the `backlog` refresh filled in the same pass that built the panel (see
+  `backlog.py`). It is a two-string dict lookup and it obeys the rule for the reason the rule
+  exists — the rule is about slow work on a request path, and there is none here. Carrying
+  that prose in the snapshot instead would have doubled the largest panel on every poll to
+  serve a pane that reads one bead at a time; the measurement is in that file.
 - `?fresh=1` does **not** block — `mark_due()` just sets panels due, and the scheduler picks
   them up a beat later. The UI compensates by re-polling (see `#refresh` in `app.js`).
 - `?watch=<session>` is the same idea one step further, and the only server state the front
@@ -77,6 +84,13 @@ Read-only **except one allowlisted write**: `POST /api/mail` → `gt mail send`.
 `WRITE_ACTIONS`; `do_POST` refuses anything not in it. There is no shell passthrough and no
 command palette. That is a deliberate design, not an unfinished feature.
 
+The Board tab's `GET /api/bead` does not change that. It takes two strings and uses them as
+dict keys into data the scheduler already read — it opens no file, spawns no process, and can
+only answer for a bead the backlog read carried, so there is nothing for a crafted `rig` or
+`id` to reach. The Board tab itself is read-only for the same reason the rest is: the operator's
+design had an "Approve plan" button on it, and that is a write, filed separately (gc-dzd) so a
+human signs off on it rather than it arriving as part of a viewer.
+
 Why this matters more than it looks: **sending mail nudges the recipient agent awake, and Gas
 Town agents typically run with permission checks disabled.** The compose box is "start an
 autonomous agent", not "send a chat message". A new write endpoint is a design decision that
@@ -114,13 +128,13 @@ Other things not to erode:
 
 | Path | What it is |
 |---|---|
-| `server.py` | HTTP handlers + the refresh scheduler + `READS`/`WRITE_ACTIONS`. ~250 lines; keep it that way. |
+| `server.py` | HTTP handlers + the refresh scheduler + `READS`/`WRITE_ACTIONS`. ~380 lines and it should not grow much: handlers, the scheduler, the two tables, nothing else. Anything a handler needs to *know* belongs in the module that owns the read. |
 | `demo.py` | Synthetic fixtures for `--demo`. |
 | `models.py` | The `models` read: which model each agent runs, from its Claude Code transcript. |
 | `panes.py` | Two reads off the same tmux screens. `panes`: what each agent is *doing*, one summary line per session — `gt`'s `state` field means "has a bead on its hook", not "is working", so this is the console's only source of activity. `watch`: one agent's *whole* screen, for the live terminal view, and only while somebody has that view open. |
 | `beads.py` | The one way to run `bd`. Owns repo discovery and the invocation, because a bead read against the wrong directory answers "nothing" instead of failing — see the section above. |
 | `flight.py` | The `flight` read: every bead that is neither open nor closed, and who holds it. `gt ready` drops a bead the moment it is picked up and no `gt` read carries an agent's work, so this is the only answer to "what is being worked on". One `bd list` per beads repo in town. |
-| `backlog.py` | The `backlog` read: each rig's whole backlog with its structure intact — the epic hierarchy, the `blocks` edges, and why every closed bead closed. The Work tab's reads are all about this minute; this is the one a ceremony reads. Slowest cadence, biggest payload, trimmed hardest. |
+| `backlog.py` | The `backlog` read: each rig's whole backlog with its structure intact — the epic hierarchy, the `blocks` edges, and why every closed bead closed. The Work tab's reads are all about this minute; this is the one a ceremony reads. Slowest cadence, biggest payload, trimmed hardest. Also owns the prose table behind `GET /api/bead` — the four long fields, kept beside the panel rather than in it. |
 | `graph.py` | The same beads, drawn: epic trees and the `blocks` graph as SVG, laid out in stdlib Python. Not a read — it takes what `backlog.py` has already trimmed and rides inside that panel, so the picture and the lists beside it can never be a cadence apart. The one place markup is generated on the server, which is why it does its own escaping. |
 | `static/index.html` | The whole page skeleton; every panel is an empty `<div id=…>`. |
 | `static/app.js` | Fetch, state, and all rendering. Vanilla JS, no framework. |
@@ -140,6 +154,11 @@ Two rules follow from that:
 
 - **`demo.fixtures()` must return exactly the keys in `READS`** — the demo seed loop iterates
   the fixtures, so a read added to `READS` without a fixture leaves that panel dead in demo.
+  `demo.prose()` is the exception that proves it: the planning pane's text is not a panel, so
+  it cannot be a fixture key, and it is seeded through `backlog.load_prose()` beside them. It
+  is handed the backlog fixture and fills a blank for every carried bead, because the live
+  table's key set is every carried bead — a bead with nothing written on it has to answer
+  "nothing written down" and not "not carried".
 - **Fixtures must match the real shape of `gt --json` output.** If you change what a renderer
   expects, change `demo.py` in the same commit.
 

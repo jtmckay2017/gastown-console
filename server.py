@@ -313,6 +313,16 @@ class Handler(BaseHTTPRequestHandler):
             if qs.get("fresh", ["0"])[0] == "1":
                 mark_due(name)
             return self._json(panel(name))
+        # One bead's long prose, for the Board tab's planning pane. Not a panel and not
+        # a read: the `backlog` refresh already fetched these fields and kept them
+        # beside the panel rather than in it (see backlog.py), so this is a dict lookup
+        # by two exact strings — no subprocess, nothing that can block, and nothing the
+        # snapshot has to carry for every bead on the off chance one card is open.
+        if u.path == "/api/bead":
+            rig = qs.get("rig", [""])[0]
+            ident = qs.get("id", [""])[0]
+            data, err = backlog.prose(rig, ident)
+            return self._json({"rig": rig, "id": ident, "data": data, "error": err})
         self.send_error(404)
 
     def do_POST(self):
@@ -351,9 +361,15 @@ if __name__ == "__main__":
     if DEMO:
         import demo
         seeded = time.time()
-        for name, data in demo.fixtures().items():
+        fixtures = demo.fixtures()
+        for name, data in fixtures.items():
             _cache[name] = {"data": data, "error": None, "at": seeded,
                             "loading": False, "due": float("inf"), "inflight": False}
+        # The prose behind the planning pane lives beside the backlog panel rather than
+        # in it, so the fixtures cannot carry it — `demo.fixtures()` must return exactly
+        # the keys in READS. It is seeded the same way, from the same file, off the same
+        # beads: every carried bead is a key, whether or not anybody wrote a plan on it.
+        backlog.load_prose(demo.prose(fixtures["backlog"]))
     else:
         threading.Thread(target=scheduler, daemon=True).start()
 

@@ -40,6 +40,7 @@
 <nav class="tabs" id="tabs">
   <button class="tab is-active" data-view="overview">Overview</button>
   <button class="tab" data-view="work">Work <span class="pill" id="pill-work">0</span></button>
+  <button class="tab" data-view="board">Board <span class="pill" id="pill-board">0</span></button>
   <button class="tab" data-view="backlog">Backlog <span class="pill" id="pill-backlog">0</span></button>
   <button class="tab" data-view="agents">Agents <span class="pill" id="pill-agents">0</span></button>
   <button class="tab" data-view="mail">Mail <span class="pill" id="pill-mail">0</span></button>
@@ -90,6 +91,29 @@
     <div class="section">
       <h2 class="section-head">Ready <span class="muted" id="ready-count"></span></h2>
       <div id="work" class="stack"></div>
+    </div>
+  </section>
+
+  <!-- The same beads as the Backlog tab, arranged as the state machine they actually
+       are: columns are beads' own statuses (never a vocabulary of ours), swimlanes are
+       the parent-child edges, and a card that cannot move says what is holding it. The
+       pane on the right is the focused half — one card's gathered context, proposed
+       plan and acceptance criteria, which is the argument behind the card rather than
+       a longer version of its title. Read-only, like everything else here. -->
+  <section class="view" id="view-board">
+    <div class="toolbar">
+      <div class="search">
+        <svg viewBox="0 0 24 24" class="ico"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="board-q" type="search" placeholder="Filter by title, id, type or assignee…" autocomplete="off">
+      </div>
+      <div class="chips" id="board-chips"></div>
+    </div>
+    <div class="board-layout" id="board-layout">
+      <div class="board-main">
+        <div class="board-meta muted" id="board-meta"></div>
+        <div id="board" class="board"></div>
+      </div>
+      <aside class="board-pane" id="board-pane" aria-label="Planning pane"></aside>
     </div>
   </section>
 

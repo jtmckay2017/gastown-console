@@ -36,7 +36,9 @@ town at `~/gt` (override with `--town`).
 | Tab | What it shows |
 |---|---|
 | **Overview** | Agents up, rigs, ready work, active hooks, escalations, unread mail · rig health · priority histogram · recently closed |
-| **Work** | Every ready issue across town, with live search and source/priority filters |
+| **Work** | What is in flight and who holds it, convoy progress, and every ready issue, with live search and source/priority filters |
+| **Board** | The same beads as a kanban — columns are beads' own statuses (blocked always among them), swimlanes are the epic hierarchy, and clicking a card opens its gathered context, proposed plan and acceptance criteria beside the board |
+| **Backlog** | Each rig's whole plan with its structure intact: epic trees and dependency chains drawn as SVG, what is blocked and behind what, and why every closed bead closed |
 | **Agents** | Every agent in town — including the deacon's dogs and anything else holding a session — grouped by what it is actually doing, read from its screen: working, input staged, assigned, idle, done, parked, not started, stopped |
 | **Mail** | Inbox, plus compose with address autocomplete and voice dictation |
 | **Activity** | The `gt trail` event feed |

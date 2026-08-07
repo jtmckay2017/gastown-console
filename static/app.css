@@ -535,10 +535,146 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
   backdrop-filter: blur(8px); font-size: 11.5px;
 }
 
+/* ---------- board ----------
+   A kanban of the same beads, and two layout facts do all the work.
+
+   ONE HORIZONTAL SCROLLER, MANY GRIDS. Every row on the board — the column headings and
+   each lane's cells — is its own grid with the same template, all of them children of
+   one element inside one overflow-x box. Same template plus same width means the tracks
+   line up down the whole page, so the columns stay columns however many lanes there
+   are, and one sideways scroll moves the board rather than each lane separately.
+
+   MIN-CONTENT, NOT WRAPPING. Columns have a floor (they are cards, and a 90px card is
+   unreadable) and the inner box is min-content wide, so a board too wide for the screen
+   scrolls sideways instead of collapsing. That is the one honest failure mode: a
+   six-column state machine squeezed into 360px is not a smaller board, it is a
+   different and useless picture. */
+.board-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: start; }
+.board-layout.has-pane { grid-template-columns: minmax(0, 1fr) minmax(0, 390px); }
+.board-main { min-width: 0; }
+.board-meta { margin: 0 2px 10px; font-size: 12px; }
+.board { overflow-x: auto; overscroll-behavior-x: contain; padding-bottom: 6px; }
+.board-inner { min-width: min-content; display: flex; flex-direction: column; gap: 12px; }
+.board-row { display: grid; grid-template-columns: repeat(var(--bn), minmax(200px, 1fr)); gap: 10px; }
+
+/* The heading row is not inside a lane, so it has to pay the lane's border and padding
+   itself or its tracks would sit 11px left of every cell they name. */
+.board-head { padding-inline: 11px; }
+.bcol-head { display: flex; align-items: baseline; gap: 8px; padding: 4px 10px 6px; border-bottom: 2px solid var(--border); }
+.bcol-label { font-size: 11.5px; font-weight: 650; text-transform: uppercase; letter-spacing: .06em; }
+.bcol-n { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--faint); font-size: 12px; }
+
+/* A lane is a whole plan, so it gets a card's border rather than a rule — at six lanes
+   down a page, "where does this epic end" has to be answerable at a glance. */
+.lane { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+.lane-bar { display: flex; align-items: stretch; background: var(--surface-2); border-bottom: 1px solid var(--border-soft); }
+/* A lane is as wide as the whole board, so both of its controls are content-sized and
+   pinned left. They carry the bar's own background because sticky content sits over the
+   scrolled row behind it. */
+.lane-toggle, .lane-head {
+  position: sticky; background: var(--surface-2); border: 0; cursor: pointer; text-align: left;
+}
+.lane-toggle { left: 0; flex: none; width: 38px; display: grid; place-items: center; color: var(--faint); }
+.lane-head { left: 38px; flex: 0 1 auto; min-width: 0; max-width: 520px; display: block; padding: 10px 14px 11px 0; }
+.lane-toggle:hover, .lane-head:hover { background: var(--surface-3); }
+.lane-toggle:focus-visible, .lane-head:focus-visible { outline: 2px solid var(--blue); outline-offset: -3px; }
+.lane-toggle[aria-expanded="true"] .chev { transform: rotate(90deg); }
+.lane-head.is-on { background: color-mix(in srgb, var(--blue) 12%, var(--surface-2)); box-shadow: inset 2px 0 0 var(--blue); }
+.lane-main { min-width: 0; display: block; }
+.lane-title { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lane-bar-track { display: block; width: 160px; margin-top: 7px; }
+.lane-loose { padding: 10px 12px; font-size: 12.5px; }
+.lane-cols { padding: 10px; }
+
+.bcol { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 8px; background: var(--surface-2); border-radius: var(--radius-sm); }
+.bcol.is-empty { background: color-mix(in srgb, var(--surface-2) 45%, transparent); }
+.bcard {
+  display: flex; flex-direction: column; gap: 4px; width: 100%; text-align: left;
+  padding: 9px 10px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow); cursor: pointer;
+}
+.bcard:hover { border-color: var(--faint); }
+.bcard:focus-visible { outline: 2px solid var(--blue); outline-offset: -3px; }
+.bcard.is-sel { border-color: var(--blue); box-shadow: 0 0 0 2px color-mix(in srgb, var(--blue) 32%, transparent); }
+.bcard.is-done { opacity: .6; }
+.bcard.is-done:hover, .bcard.is-done:focus-visible { opacity: 1; }
+.bcard-id { color: var(--muted); overflow-wrap: anywhere; }
+.bcard-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+/* Somebody has already thought this one through. It is the marker that makes the pane
+   worth opening, so it is on the card rather than only inside it. */
+.bcard-plan {
+  padding: 1px 6px; border-radius: 99px; font-size: 10px; font-weight: 650;
+  text-transform: uppercase; letter-spacing: .06em; color: var(--purple);
+  background: color-mix(in srgb, var(--purple) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--purple) 45%, transparent);
+}
+.bcard-title {
+  font-size: 13px; font-weight: 550; line-height: 1.35; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical;
+}
+.bcard-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--muted); font-size: 11.5px; }
+.bcard-who { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bcard-kids { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* The whole point of the blocked column, on the card: what is holding it. Wrapped
+   rather than truncated — an id nobody can read is the same as no id at all. */
+.bcard-blocked { font-size: 11.5px; color: var(--red); overflow-wrap: anywhere; }
+.bcol-more {
+  padding: 6px; background: none; border: 1px dashed var(--border); border-radius: var(--radius-sm);
+  color: var(--muted); font-size: 12px; cursor: pointer;
+}
+.bcol-more:hover { border-color: var(--faint); color: var(--text); }
+.bcol-more:focus-visible { outline: 2px solid var(--blue); outline-offset: -3px; }
+
+/* ---------- the planning pane ----------
+   Docked, not modal: no overlay and no focus trap, so the board stays readable beside
+   it and Escape is a convenience rather than the only way out. It sticks below the two
+   sticky bars above it and scrolls on its own, because the prose it carries is the one
+   thing on this page that is genuinely long. */
+.board-pane { display: none; min-width: 0; }
+.board-layout.has-pane .board-pane {
+  display: block; position: sticky; top: 104px; max-height: calc(100vh - 124px);
+  overflow-y: auto; overscroll-behavior-y: contain;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+}
+.pane-head {
+  position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px;
+  padding: 9px 10px 9px 14px; background: var(--surface-2);
+  border-bottom: 1px solid var(--border-soft);
+}
+.pane-eyebrow { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+.pane-close { margin-left: auto; }
+.pane-body { padding: 12px 14px 16px; }
+.pane-title { font-size: 14.5px; line-height: 1.35; overflow-wrap: anywhere; }
+.pane-id { display: flex; align-items: center; gap: 8px; margin-top: 6px; color: var(--muted); }
+.pane-fields { padding: 12px 0 4px; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); }
+.pane-refs { margin-top: 12px; }
+.pane-label { font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); }
+.pane-label .muted { font-weight: 400; text-transform: none; letter-spacing: 0; font-size: 11.5px; }
+.pane-link {
+  display: flex; align-items: center; gap: 9px; width: 100%; margin-top: 6px;
+  padding: 7px 9px; text-align: left; background: var(--surface-2);
+  border: 1px solid var(--border-soft); border-radius: var(--radius-sm); cursor: pointer;
+}
+.pane-link:hover { border-color: var(--faint); }
+.pane-link:focus-visible { outline: 2px solid var(--blue); outline-offset: -3px; }
+.pane-link.is-flat { cursor: default; color: var(--muted); }
+.pane-link-main { min-width: 0; flex: 1; display: block; }
+.pane-link-title { display: block; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The prose blocks are the reason the pane is a pane. They are not clipped by the
+   server here (backlog.py sends them whole), so they get room and their own scroll. */
+.pane-prose { margin-top: 14px; }
+.pane-prose .bead-text { margin: 8px 0; max-height: 340px; }
+.pane-wait { padding: 10px 2px; color: var(--muted); font-size: 12.5px; font-style: italic; }
+
 /* ---------- responsive ---------- */
 @media (max-width: 1080px) {
   .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .span-2 { grid-column: span 2; }
+  /* No room for a column beside the board — the pane stacks under it and stops being
+     sticky, because a sticky panel that is taller than the viewport just traps scroll. */
+  .board-layout.has-pane { grid-template-columns: minmax(0, 1fr); }
+  .board-layout.has-pane .board-pane { position: static; max-height: none; }
 }
 @media (max-width: 760px) {
   .topbar { gap: 10px; padding: 9px 12px; flex-wrap: wrap; }
@@ -582,4 +718,14 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
      can and takes the rest as a sideways scroll of its own. */
   .fig-scroll { padding: 10px 8px; }
   .fig-head { padding: 9px 10px; }
+  /* The board keeps its columns and takes the sideways scroll, for the same reason the
+     diagrams keep their pixel size: six columns folded into 360px is a different
+     picture, not a smaller one. Cards get a touch narrower and lose a line of title. */
+  .board-row { grid-template-columns: repeat(var(--bn), minmax(178px, 1fr)); gap: 8px; }
+  .lane-cols { padding: 8px; }
+  .bcol { padding: 6px; gap: 6px; }
+  .bcard-title { -webkit-line-clamp: 2; line-clamp: 2; }
+  .lane-bar-track { display: none; }
+  .pane-body { padding: 11px 12px 14px; }
+  .pane-prose .bead-text { max-height: 240px; }
 }
