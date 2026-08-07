@@ -34,11 +34,16 @@ _project() keeps the fields the front end draws, and keeps prose only where pros
 the answer: an epic's description (the argument for the epic) and close_reason (the
 argument for closing), both clipped. A leaf task's description is what `bd show` is
 for. That is 58KB for the same 124 beads.
+
+The one thing in the payload that is not a bead is `graphs` — those same beads, drawn.
+See graph.py. It is handed the trimmed list rather than the raw one, so a picture can
+never contain a bead the lists beside it do not.
 """
 
 import collections
 
 import beads
+import graph
 
 # Scaffolding, not work, and the same three flight.py drops: a convoy has its own
 # renderer, a molecule is the workflow wrapper around a bead rather than the bead, and
@@ -156,6 +161,9 @@ def _rig(label, repo):
     kids = collections.Counter(b["parent"] for b in work if b.get("parent"))
     kids_closed = collections.Counter(b["parent"] for b in work
                                       if b.get("parent") and b.get("status") == "closed")
+    carried = [_project(b, b["id"] in kids,
+                        (kids[b["id"]], kids_closed[b["id"]]) if kids[b["id"]] else None)
+               for b in live + closed if b["id"] in keep]
     return {
         "rig": label,
         # Everything the database holds, scaffolding included, so the panel can show
@@ -166,9 +174,10 @@ def _rig(label, repo):
         "type": dict(collections.Counter(str(b.get("issue_type") or "?") for b in work)),
         "open_total": len(live),
         "closed_total": len(closed),
-        "beads": [_project(b, b["id"] in kids,
-                           (kids[b["id"]], kids_closed[b["id"]]) if kids[b["id"]] else None)
-                  for b in live + closed if b["id"] in keep],
+        "beads": carried,
+        # The same beads, drawn. It is built here rather than in a read of its own so
+        # that the picture and the list can never be a cadence apart — see graph.py.
+        "graphs": graph.build(carried),
     }, None
 
 

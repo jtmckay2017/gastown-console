@@ -102,7 +102,12 @@ Other things not to erode:
   sequences and control characters are stripped server-side in `panes.py` (stripped, not
   rendered — colour is worth nothing here and an escape parser would be a second injection
   surface), and `paintWatch()` sets the text through `textContent` so it never becomes markup
-  at all.
+  at all. The **one** exception is the Backlog tab's map, which arrives from the server as
+  SVG and is assigned straight through `innerHTML` — so `graph.py` takes on that escaping
+  obligation itself, for every bead title and id it draws, and emits a closed tag set with no
+  script, no handler and no URL in it. Read the note at the top of that file before adding to
+  it. SVG text is an injection surface exactly like HTML is, and a second such exception
+  should be argued for rather than assumed.
 - `_file()` refuses paths that escape `static/`.
 
 ## Layout
@@ -116,6 +121,7 @@ Other things not to erode:
 | `beads.py` | The one way to run `bd`. Owns repo discovery and the invocation, because a bead read against the wrong directory answers "nothing" instead of failing — see the section above. |
 | `flight.py` | The `flight` read: every bead that is neither open nor closed, and who holds it. `gt ready` drops a bead the moment it is picked up and no `gt` read carries an agent's work, so this is the only answer to "what is being worked on". One `bd list` per beads repo in town. |
 | `backlog.py` | The `backlog` read: each rig's whole backlog with its structure intact — the epic hierarchy, the `blocks` edges, and why every closed bead closed. The Work tab's reads are all about this minute; this is the one a ceremony reads. Slowest cadence, biggest payload, trimmed hardest. |
+| `graph.py` | The same beads, drawn: epic trees and the `blocks` graph as SVG, laid out in stdlib Python. Not a read — it takes what `backlog.py` has already trimmed and rides inside that panel, so the picture and the lists beside it can never be a cadence apart. The one place markup is generated on the server, which is why it does its own escaping. |
 | `static/index.html` | The whole page skeleton; every panel is an empty `<div id=…>`. |
 | `static/app.js` | Fetch, state, and all rendering. Vanilla JS, no framework. |
 | `static/app.css` | Themes via `:root` custom properties + `:root[data-theme="light"]`. |

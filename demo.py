@@ -5,6 +5,8 @@ import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
+import graph
+
 
 def _ago(**kw):
     return (datetime.now(timezone.utc) - timedelta(**kw)).isoformat().replace("+00:00", "Z")
@@ -96,7 +98,10 @@ def _backlog_rig(label, rows, scaffolding=0):
             "status": dict(Counter(b["status"] for b in rows)),
             "type": dict(Counter(b["issue_type"] for b in rows)),
             "open_total": len(rows) - len(closed), "closed_total": len(closed),
-            "beads": rows}
+            "beads": rows,
+            # Drawn by the same code the live read draws with, off the same beads, so
+            # demo exercises the layout rather than a picture of a picture.
+            "graphs": graph.build(rows)}
 
 
 def _tracked(id_, title, status, assignee=""):
@@ -343,6 +348,33 @@ def fixtures():
                   "blocked", parent="wp-110", blocked_by=["wp-120"], hours=4),
             _bead("wp-111", "Replace hand-rolled date parsing with the shared helper",
                   "task", 3, parent="wp-110", blocked_by=["wp-98"], hours=20),
+            # A chain of three under one epic: wp-141 cannot start until wp-142 does,
+            # and wp-140 waits on both. This is the shape the map exists for — in the
+            # lists it is three rows in three places that each name one id.
+            _bead("wp-142", "Land the primary and quiet tokens in the theme file", "task",
+                  1, "in_progress", parent="wp-110", assignee="web_platform/Toast",
+                  minutes=18),
+            _bead("wp-141", "Point the shared Button at the new tokens", "task", 1,
+                  parent="wp-110", blocked_by=["wp-142"], hours=7),
+            _bead("wp-140", "Delete the four dead button variants", "task", 2,
+                  parent="wp-110", blocked_by=["wp-141"], hours=8),
+            # The expensive surprise: a dependency that leaves the epic. wp-104 is a
+            # top-level bug, so this edge crosses two plans and draws as a crossing.
+            _bead("wp-143", "Restyle the checkout call to action", "task", 2,
+                  parent="wp-110", blocked_by=["wp-104"], hours=11),
+            # And the crowded case — the one a five-child fixture never tests. Nineteen
+            # children under one epic is what a screen-by-screen migration actually
+            # looks like, and what the biggest epic in this town holds.
+            *[_bead(f"wp-{150 + i}", f"Migrate {screen} to the shared button tokens",
+                    "task", 3, status, parent="wp-110",
+                    reason=f"Merged in #48{i}." if status == "closed" else "",
+                    hours=12 + i * 3)
+              for i, (screen, status) in enumerate([
+                  ("the settings screens", "closed"), ("the onboarding flow", "closed"),
+                  ("the profile editor", "closed"), ("search", "open"),
+                  ("the admin console", "open"), ("billing", "open"),
+                  ("the empty states", "open"), ("the mobile nav", "open"),
+                  ("the marketing pages", "open"), ("the help centre", "open")])],
             _bead("wp-101", "Session cookie is not rotated after privilege change", "bug",
                   1, hours=2),
             _bead("wp-104", "Checkout flow loses cart on slow networks", "bug", 1, hours=4),
@@ -463,5 +495,9 @@ def fixtures():
                     "in_progress", "mayor/", "town", minutes=3),
             _flight("wp-122", "Checkout retry needs the new idempotency key", 2,
                     "blocked", "", "web_platform", hours=4),
+            # The head of the three-deep chain in the backlog fixture. It is here as
+            # well as there because the two reads must agree bead for bead — see above.
+            _flight("wp-142", "Land the primary and quiet tokens in the theme file", 1,
+                    "in_progress", "web_platform/Toast", "web_platform", minutes=18),
         ],
     }

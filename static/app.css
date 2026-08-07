@@ -383,6 +383,62 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
+/* ---------- the backlog map ----------
+
+   The SVG itself is generated on the server (graph.py) and carries nothing but class
+   names, so every colour in the pictures is a custom property and both themes come out
+   right without the server knowing which one is on. Change a token here and the
+   diagrams follow; hardcode a hex in graph.py and one theme loses it. */
+/* `overflow: hidden` here is what keeps the page itself from scrolling sideways: the
+   SVG inside is a fixed pixel width and will not shrink, so without a clip on the
+   figure it would widen the column, the cards beside it and the body with it. The clip
+   stops at this box and .fig-scroll below hands the overflow back as a scroll of its
+   own. Measured on the 19-child epic at a 520px viewport: scrollWidth == clientWidth. */
+.fig { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+.fig-head { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; padding: 10px 12px; border-bottom: 1px solid var(--border-soft); }
+.fig-head h3 { font-family: var(--mono); font-size: 12.5px; }
+.fig-head .muted { font-size: 12px; }
+/* A diagram that fits nothing is worse than one you scroll: the SVG keeps its pixel
+   size and this box takes the overflow, so the page body never scrolls sideways. */
+.fig-scroll { overflow-x: auto; overflow-y: hidden; padding: 12px; overscroll-behavior-x: contain; }
+.fig-svg { display: block; }
+
+.fig-key { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 2px 4px; font-size: 12px; color: var(--muted); }
+.key { display: inline-flex; align-items: center; gap: 6px; }
+.key::before { content: ""; width: 11px; height: 11px; border-radius: 3px; border: 1.4px solid var(--faint); background: var(--surface-3); }
+.key.g-open::before { border-color: var(--blue); }
+.key.g-live::before { border-color: var(--green); background: color-mix(in srgb, var(--green) 16%, var(--surface)); }
+.key.g-block::before { border-color: var(--red); border-style: dashed; background: color-mix(in srgb, var(--red) 14%, var(--surface)); }
+.key.g-done::before { border-color: var(--border); }
+.key.g-cross::before { width: 16px; height: 0; border-radius: 0; border: 0; border-top: 2px dashed var(--purple); }
+
+/* Nodes. Status is carried by outline colour *and* by shape — blocked is dashed and
+   flagged — because colour alone is not a distinction every reader can make. */
+.gn text { font-size: 11.5px; fill: var(--text); }
+.gn .gi { font-family: var(--mono); font-size: 10.5px; fill: var(--muted); }
+.gn .gx { font-size: 10.5px; font-family: var(--mono); fill: var(--red); }
+.gn rect { fill: var(--surface-2); stroke: var(--faint); stroke-width: 1.2; }
+.g-epic rect { fill: var(--surface-3); stroke: var(--purple); stroke-width: 1.4; }
+.g-open rect { stroke: var(--blue); }
+.g-live rect { stroke: var(--green); fill: color-mix(in srgb, var(--green) 12%, var(--surface-2)); }
+.g-block rect { stroke: var(--red); stroke-width: 1.8; stroke-dasharray: 4 2.5; fill: color-mix(in srgb, var(--red) 12%, var(--surface-2)); }
+.g-done rect { stroke: var(--border); fill: var(--surface); }
+.g-done text { fill: var(--muted); }
+.gw { fill: var(--red); }
+.gs { font-size: 11px; fill: var(--muted); }
+
+/* Edges. The parent spine is structure and stays quiet; a dependency is the thing
+   being looked for, so it is heavier, and one that leaves its epic is dashed. */
+.ge { fill: none; stroke: var(--border); stroke-width: 1.3; }
+.ge-dep { stroke: var(--red); stroke-width: 1.5; }
+.ge-cross { stroke: var(--purple); stroke-dasharray: 5 3; }
+.ga { fill: var(--red); }
+/* An edge whose blocker has already closed: still the shape of the plan, no longer
+   the shape of the problem. Stated on the two elements separately — a curve that
+   picked up the arrowhead's fill would paint itself in as a solid blob. */
+.ge.ge-past { stroke: var(--faint); stroke-width: 1.2; stroke-dasharray: none; }
+.ga.ge-past { fill: var(--faint); }
+
 /* Section headings on the Work tab — a level above the .group-head rows inside each
    one, which label states and sources rather than sections. */
 .section + .section { margin-top: 24px; }
@@ -521,4 +577,9 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
      the second, rather than the button orphaning onto a third. */
   .watch-foot > .muted { flex: 1 1 100%; }
   .watch-cmd { margin-left: 0; flex: 1 1 0; }
+  /* The diagrams keep their pixel size — shrinking one to fit 360px is how a legible
+     graph becomes a grey smudge — so the box gives them as much of the width as it
+     can and takes the rest as a sideways scroll of its own. */
+  .fig-scroll { padding: 10px 8px; }
+  .fig-head { padding: 9px 10px; }
 }

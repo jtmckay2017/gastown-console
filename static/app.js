@@ -74,6 +74,10 @@ const state = {
   // there), and its own expansion set, keyed by bead id. One set across all four of
   // its sections — a bead expanded as an epic is the same bead expanded as a closure.
   bq: "", brig: "all", beads: new Set(),
+  // The map's last markup. The pictures are the biggest subtree on the page and they
+  // scroll inside their own boxes, so they are only rewritten when they change — see
+  // renderMap.
+  mapHtml: "",
   // The tmux session whose terminal is open in the watch view, and the last `watch`
   // panel fetched for it. One at a time: watching is an act of attention, and two
   // live terminals on one screen is two things nobody is reading. See watchView().
@@ -970,6 +974,82 @@ function renderCoverage(m) {
     </div>`).join("") : empty("No beads repo answered"));
 }
 
+/* ---- the map ----
+
+   The one place on this page where markup arrives from the server instead of being
+   built here. graph.py draws the epic trees and the blocks graph as SVG and escapes
+   every bead title on the way out — read the note at the top of that file before
+   touching this, because assigning it through innerHTML is what makes that escaping
+   load-bearing rather than decorative. Nothing below interpolates a bead value of its
+   own; the captions are counts, and the rig name goes through esc() like everything
+   else. */
+
+const LEGEND = [["g-open", "open"], ["g-live", "in flight"], ["g-block", "blocked"],
+  ["g-done", "closed"], ["g-cross", "leaves its epic"]];
+
+const legendHtml = () => `<div class="fig-key">${LEGEND
+  .map(([k, l]) => `<span class="key ${k}">${esc(l)}</span>`).join("")}</div>`;
+
+function figure(title, note, svg) {
+  return `<figure class="fig">
+    <figcaption class="fig-head"><h3>${esc(title)}</h3><span class="muted">${esc(note)}</span></figcaption>
+    <div class="fig-scroll">${svg}</div>
+  </figure>`;
+}
+
+/** Every selected rig's pictures: its dependency graph first, because the chains are
+    the thing no list on this page can show, then one tree per open epic, biggest first.
+    The text filter applies — an epic is drawn if it or any child matches — so the map
+    narrows with the lists rather than sitting there contradicting them. */
+function renderMap(m) {
+  if (loadingOf("backlog")) {
+    state.mapHtml = "";     // so the first real draw is never mistaken for a no-op
+    return void ($("#map").innerHTML = SKEL);
+  }
+  const blocks = [], trees = [];
+  for (const r of m.sel) {
+    const g = r.graphs || {};
+    const kids = (id) => (m.children.get(id) || []);
+    if (g.blocks) {
+      // Drawn whole, and drawn even while the filter is on: the server laid this one
+      // out over every edge in the rig and a half of a dependency graph is not a
+      // smaller dependency graph. The caption says so rather than letting it look
+      // filtered.
+      blocks.push(figure(`${r.rig} · dependencies`,
+        [`${g.blocks.edges} blocks edges over ${g.blocks.nodes} beads`,
+          `${g.blocks.depth} deep`,
+          g.blocks.met ? `${g.blocks.met} already met` : "",
+          g.blocks.cross ? `${g.blocks.cross} leaving an epic` : "none leave an epic",
+          g.blocks.trimmed ? `${g.blocks.trimmed} trimmed` : "",
+          state.bq ? "whole rig — not filtered" : ""].filter(Boolean).join(" · "),
+        g.blocks.svg));
+    }
+    for (const e of g.epics || []) {
+      const bead = m.byId.get(e.id);
+      if (state.bq && !(bead && beadMatches(bead)) && !kids(e.id).some(beadMatches)) continue;
+      trees.push(figure(`${r.rig} · ${e.id}`,
+        [`${e.kids} children`, e.drawn < e.kids ? `${e.drawn} drawn` : "",
+          e.blocked ? `${e.blocked} blocked` : "nothing blocked"].filter(Boolean).join(" · "),
+        e.svg));
+    }
+  }
+  const total = m.sel.reduce((n, r) => n + num((r.graphs || {}).epics_total), 0);
+  $("#map-count").textContent = !total ? ""
+    : trees.length === total ? `${total} open epic${total === 1 ? "" : "s"}`
+      : `${trees.length} of ${total} open epics`;
+  const drawn = blocks.join("") + trees.join("");
+  const html = drawn ? legendHtml() + drawn
+    : empty(total ? "Nothing in the map matches that filter"
+      : "Nothing here has children or dependencies to draw");
+  // These are the largest subtrees on the page and they scroll sideways inside their
+  // own boxes, so rewriting them on every 8s poll would throw away the operator's
+  // scroll position mid-read. The pictures only change when the backlog read does.
+  if (html !== state.mapHtml) {
+    state.mapHtml = html;
+    $("#map").innerHTML = html;
+  }
+}
+
 function renderBacklog() {
   if (loadingOf("backlog")) {
     ["#epics", "#blocked", "#closed", "#backlog-rigs"].forEach((s) => ($(s).innerHTML = SKEL));
@@ -987,6 +1067,7 @@ function renderBacklog() {
   renderBacklogKpis(m);
   renderDistribution(m);
   renderCoverage(m);
+  renderMap(m);
   renderEpics(m);
   renderBlocked(m);
   renderBacklogFlight();
