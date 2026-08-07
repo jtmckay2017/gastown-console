@@ -19,13 +19,27 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
+import models
+
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 ENV = dict(os.environ, PATH="/opt/homebrew/bin:/usr/local/bin:" + os.environ.get("PATH", ""))
 TOWN = os.path.expanduser("~/gt")
 TOKEN = None
 DEMO = False
 
-# name -> (argv, seconds between background refreshes). Every one is read-only.
+
+def agent_models():
+    """The "models" read: which model each agent runs, out of its Claude Code
+    transcript because `gt` exposes none. See models.py — it derives from the status
+    panel, which the scheduler keeps warmer than this one on its own cadence."""
+    with _guard:
+        status = _cache["status"]["data"]
+    return models.by_agent(status, TOWN)
+
+
+# name -> (source, seconds between background refreshes). A source is `gt` argv —
+# every one read-only — or a callable returning (data, error) for a read that is not
+# a `gt` call at all. Either way this table stays the one place a read is declared.
 READS = {
     "status":      (["status", "--json"], 15),
     "rigs":        (["rig", "list", "--json"], 45),
@@ -35,6 +49,9 @@ READS = {
     "trail":       (["trail", "--limit", "40", "--json"], 20),
     "changelog":   (["changelog", "--json"], 90),
     "convoys":     (["convoy", "list", "--json"], 60),
+    # Slower than the panels it decorates: a session's model never changes under it,
+    # and models.py re-reads a transcript only once it has actually grown.
+    "models":      (agent_models, 60),
 }
 
 # Concurrent `gt` calls contend on the Dolt server, so keep the fan-out small.
@@ -70,14 +87,15 @@ def run_gt(args, timeout=60):
 
 
 def refresh(name):
-    """Run one read into the cache. Scheduler thread only — this blocks on `gt`."""
+    """Run one read into the cache. Scheduler thread only — this is the slow half."""
     if DEMO:
-        # Demo serves fixtures and must never shell out; keep what was seeded.
+        # Demo serves fixtures and must never shell out or read a real transcript;
+        # keep what was seeded.
         with _guard:
             _cache[name]["inflight"] = False
         return
-    args, interval = READS[name]
-    data, err = run_gt(args)
+    source, interval = READS[name]
+    data, err = run_gt(source) if isinstance(source, list) else source()
     with _guard:
         e = _cache[name]
         e["at"] = time.time()

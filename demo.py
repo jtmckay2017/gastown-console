@@ -104,10 +104,23 @@ def fixtures():
                         "by_source": {s["name"]: len(s["issues"]) for s in ready["sources"]},
                         **counts}
 
+    # The models panel, keyed by agent address exactly as models.by_agent() returns it.
+    # Demo never opens a real transcript. Slit is deliberately left out: an agent the
+    # server cannot map to a transcript with certainty shows no model at all, and the
+    # demo is the only place a contributor sees that case.
+    by_role = {"coordinator": "claude-opus-5", "health-check": "claude-haiku-4-5-20251001",
+               "witness": "claude-opus-5", "refinery": "claude-sonnet-5",
+               "polecat": "claude-opus-5"}
+    models = {a["address"]: by_role[a["role"]]
+              for a in [*status["agents"], *(a for r in rig_blocks for a in r["agents"])]
+              if a["role"] in by_role}
+    models.pop("web_platform/Slit", None)
+
     return {
         "status": status,
         "rigs": rigs,
         "ready": ready,
+        "models": models,
         # Every list below arrives deliberately out of order — the console sorts each one
         # newest-first itself (gc-feh), and a pre-sorted fixture would hide a regression.
         "mail": [

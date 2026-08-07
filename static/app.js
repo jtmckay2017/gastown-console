@@ -338,10 +338,11 @@ function agentState(a) {
 const agentKey = (a) => String(a.address || `${a.rig}/${a.name || ""}`);
 const detailId = (key) => `agent-detail-${key.replace(/[^a-zA-Z0-9]+/g, "-")}`;
 
-/** Everything gt actually carries per agent. There is no work/issue field in
-    `gt status --json` — verified, the key is simply absent — so nothing here
-    claims to show what an agent is working on. */
-function agentDetail(a) {
+/** Everything gt actually carries per agent, plus the model. There is no work/issue
+    field in `gt status --json` — verified, the key is simply absent — so nothing here
+    claims to show what an agent is working on. `models` is the models panel, keyed by
+    address; it is a separate read because gt carries no model either. */
+function agentDetail(a, models) {
   const runtime = [a.agent_alias, a.agent_info !== a.agent_alias ? a.agent_info : ""].filter(Boolean).join(" · ");
   const fields = [
     ["Rig", a.rig, ""],
@@ -355,6 +356,10 @@ function agentDetail(a) {
     // Fetched on every refresh and, until now, rendered nowhere.
     ["Oldest unread", pick(a, ["first_subject"]), "wrap"],
     ["Agent", runtime, ""],
+    // "Agent" above is the tool (always "claude"); this is the model it runs. Blank
+    // whenever the server could not map the agent to a transcript with certainty —
+    // the filter below then drops the row, because a wrong model is worse than none.
+    ["Model", (models || {})[agentKey(a)] || "", "mono"],
     ["ACP", a.acp ? "enabled" : "", ""],
   ];
   return `<dl class="agent-detail" id="${esc(detailId(agentKey(a)))}">${fields
@@ -363,7 +368,7 @@ function agentDetail(a) {
     .join("")}</dl>`;
 }
 
-function agentRow(a) {
+function agentRow(a, models) {
   const st = agentState(a);
   const key = agentKey(a);
   const open = state.expanded.has(key);
@@ -387,13 +392,16 @@ function agentRow(a) {
           <svg viewBox="0 0 24 24" class="ico chev" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
         </span>
       </button>
-      ${open ? agentDetail(a) : ""}
+      ${open ? agentDetail(a, models) : ""}
     </div>`;
 }
 
 function renderAgents(s) {
   if (loadingOf("status")) return void ($("#agents").innerHTML = SKEL);
   const all = allAgents(s);
+  // Its own panel, on its own slower cadence, so it may still be empty for a beat
+  // after the agents themselves land. Missing simply means no Model row.
+  const models = dataOf("models", {}) || {};
   $("#agent-addresses").innerHTML = all.map((a) => `<option value="${esc(a.address)}">`).join("")
     + (s.rigs || []).map((r) => `<option value="${esc(r.name)}/">`).join("");
 
@@ -409,7 +417,7 @@ function renderAgents(s) {
     const head = st.key === last ? ""
       : `<div class="group-head ${st.key === "working" ? "is-working" : ""}">${esc(st.label)} · ${counts[st.key]}</div>`;
     last = st.key;
-    return head + agentRow(a);
+    return head + agentRow(a, models);
   }).join("");
 
   // An 8s auto-refresh rebuilds this subtree; expansion lives in state.expanded so it
