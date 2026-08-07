@@ -1,0 +1,108 @@
+# Gas Town Console — agent guide
+
+A single-page web console over the [Gas Town](https://github.com/steveyegge/gastown) `gt` CLI.
+Two constraints define this project. Both are easy to break with a change that looks like an
+improvement, so read them before you touch anything.
+
+## Hard constraint 1: Python standard library only
+
+No pip, no npm, no build step, no bundler, no framework — server and front end alike.
+
+The whole value proposition is `git clone && python3 server.py --demo`. A dependency breaks
+that even when it makes some code nicer. This is not negotiable for a "nicer HTTP framework",
+a template engine, a JS build, or a CSS toolchain. If you find yourself wanting one, write the
+twenty lines by hand instead.
+
+Runtime floor is Python 3.9 and a modern browser. `static/app.js` is one plain `<script src>`,
+not a module; `static/app.css` is hand-written CSS with custom properties.
+
+## Hard constraint 2: never shell out on the HTTP request path
+
+`gt status` takes seconds, and concurrent `gt` calls contend on the Dolt server. So:
+
+- A background scheduler thread (`scheduler()` in `server.py`) refreshes each panel on its own
+  cadence into `_cache`. Cadences live in the `READS` table — that table is the single place a
+  read is declared: name → (`gt` argv, refresh interval).
+- HTTP handlers **only read `_cache`**. `GET /api/snapshot` returns every panel plus its age.
+- `?fresh=1` does **not** block — `mark_all_due()` just sets panels due, and the scheduler picks
+  them up a beat later. The UI compensates by re-polling (see `#refresh` in `app.js`).
+- A failed refresh **keeps the last good data** and attaches an error (`refresh()`), so a
+  transient `gt` hiccup never blanks a live panel. Panels carry their own `age`; the UI shows
+  the oldest.
+- `POOL` is a 3-worker `ThreadPoolExecutor` on purpose. Raising it increases Dolt contention.
+
+Any change that makes a handler block on a subprocess is wrong, no matter how fast it looks on
+a quiet town. Measure on a busy town, not yours.
+
+**Known exception — do not extend it:** `GET /api/panel/<name>` calls `refresh()` inline and
+*does* block on `gt`. Nothing in `static/app.js` calls it (the UI uses only `/api/snapshot` and
+`POST /api/mail`); treat it as a debug-only escape hatch. It also has no `--demo` guard, so
+hitting it in demo mode runs the real `gt` and permanently clobbers the fixture. Tracked as
+`gc-eiq`. Do not wire it into the UI.
+
+## Security posture
+
+Read-only **except one allowlisted write**: `POST /api/mail` → `gt mail send`. The allowlist is
+`WRITE_ACTIONS`; `do_POST` refuses anything not in it. There is no shell passthrough and no
+command palette. That is a deliberate design, not an unfinished feature.
+
+Why this matters more than it looks: **sending mail nudges the recipient agent awake, and Gas
+Town agents typically run with permission checks disabled.** The compose box is "start an
+autonomous agent", not "send a chat message". A new write endpoint is a design decision that
+needs a human — never a routine addition.
+
+Other things not to erode:
+
+- Binding off localhost auto-generates a token (`--token`, or `--no-auth` to opt out). The token
+  is a speed bump, not authentication; the README correctly points people at Tailscale/WireGuard.
+- The front end builds HTML with `innerHTML` and hand-escapes **every** interpolated value
+  through `esc()`. Every value from `gt` is untrusted. If you add markup, `esc()` it.
+- `_file()` refuses paths that escape `static/`.
+
+## Layout
+
+| Path | What it is |
+|---|---|
+| `server.py` | HTTP handlers + the refresh scheduler + `READS`/`WRITE_ACTIONS`. ~250 lines; keep it that way. |
+| `demo.py` | Synthetic fixtures for `--demo`. |
+| `static/index.html` | The whole page skeleton; every panel is an empty `<div id=…>`. |
+| `static/app.js` | Fetch, state, and all rendering. Vanilla JS, no framework. |
+| `static/app.css` | Themes via `:root` custom properties + `:root[data-theme="light"]`. |
+| `start.sh` | Restart helper; `--lan` binds `0.0.0.0` and prints a tokenized URL. |
+
+## Testing reality
+
+There is no test suite. **`python3 server.py --demo` is how you verify a change** without a
+live town — it seeds `_cache` from `demo.fixtures()`, never starts the scheduler, and never
+runs `gt`. `POST /api/mail` returns 400 in demo rather than sending.
+
+Demo mode must keep working. It is the project's 10-second first impression and the only
+verification path a contributor without a town has.
+
+Two rules follow from that:
+
+- **`demo.fixtures()` must return exactly the keys in `READS`** — the demo seed loop iterates
+  the fixtures, so a read added to `READS` without a fixture leaves that panel dead in demo.
+- **Fixtures must match the real shape of `gt --json` output.** If you change what a renderer
+  expects, change `demo.py` in the same commit.
+
+When you do have a town, check a change against real `gt` output too — demo fixtures are the
+happy path, and the real CLI is messier than they suggest.
+
+## Working with `gt` output — assume it drifts
+
+`gt`'s JSON is not a stable contract, and the code is written defensively on purpose. Keep it
+that way rather than "simplifying":
+
+- `run_gt()` strips leading warning text before the first `{`/`[`, and returns
+  `(data, error)` — never raises.
+- `app.js` uses `pick(obj, [...aliases])` for fields whose spelling varies (`read`/`is_read`,
+  `from`/`sender`/`from_address`, `at`/`created_at`/`timestamp`), tolerates a list *or* an
+  object for `trail`, and defaults everything.
+- Renderers must survive `null` data, an error string, and a still-loading panel — that is
+  what `loadingOf()`, `errNote()`, and the skeleton placeholders are for.
+
+## Conventions
+
+- Commit messages reference the issue: `feat: thing (gc-xxx)`.
+- Keep it one page and one file per concern; this project's readability *is* its documentation.
