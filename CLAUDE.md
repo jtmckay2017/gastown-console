@@ -324,6 +324,19 @@ forms; what it adds is a measure a three-thousand-character plan can be read at,
 for the structure inside it, and a beat that says when an agent revised it mid-read (gc-e71).
 Diagrams in a plan are deliberately still out of scope — every renderer for one is a
 dependency, and that is a decision the operator has not made.
+
+**It opens on the plans that are not closed, and that default is the feature** (gc-6z8). A
+town finishes most of what it plans — nineteen plans, two of them live, the first time this
+tab was pointed at a real backlog — so an unfiltered list is a history book with this week's
+work buried in it. The status chips are `bd`'s own words, read off the plans actually in hand
+so an unfamiliar status gets a chip rather than a silent omission; `active` is the one
+grouping over that vocabulary and it is defined by subtraction, in those words, on the page.
+Whatever the filters hold back is said in the index head, by count and by status — a filtered
+list that looks like the whole list is a failure this console has hit more than once, and the
+number above the rows is never the whole answer. Note what this tab does *not* borrow:
+`workLane()`'s "being worked" substitution belongs to the two surfaces that ask what is
+happening right now, and a derived lane here would be a third spelling of a bead's state on a
+tab that asks what was written down.
 | `static/app.js` | Fetch, state, and all rendering. Vanilla JS, no framework. Seven lists drill a row down into the rest of what its read already carried; the shared half of that is the "expandable detail" section near the top — `state.open`, `expandRow()`, `detailGrid()`, `prose()`, `paint()`, `expander()`. Expansion keys are namespaced per panel, because one flat set would let a mail id and a rig name mean the same row. It also carries the console's **one renderer** — `planBlocks()`/`planHtml()` in the "plans" section, which turns an agent's `design` field into headings, lists and preformatted blocks. It is hand-rolled and stays hand-rolled (a markdown dependency breaks constraint 1) and it stays on the *client* (a second server-side markup generator is what `graph.py`'s header asks not to have). It escapes every string before it adds a tag, and the only inline rule runs on the escaped text. |
 | `static/app.css` | Themes via `:root` custom properties + `:root[data-theme="light"]`. |
 | `start.sh` | Restart helper; `--lan` binds `0.0.0.0` and prints a tokenized URL. |

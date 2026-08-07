@@ -3245,7 +3245,49 @@ function planHtml(blocks) {
 }
 const planProse = (text) => planHtml(planBlocks(text));
 
-/* ---- the view ---- */
+/* ---- the view ----
+
+   THE DEFAULT IS THE FEATURE (gc-6z8). A town writes plans for years and finishes most
+   of them: the first real backlog this tab was pointed at had nineteen beads carrying a
+   plan, of which two were live. Unfiltered, that is a history book with this week's work
+   buried three screens down — and the operator's first words about it were "i need more
+   filters for the plans tab right now its just closed". So the tab opens on what is not
+   closed, and the seventeen finished ones are one chip away rather than in the way.
+   Getting that default right matters more than the controls: most sessions nobody
+   should have to filter at all.
+
+   THE STATUS VOCABULARY IS `bd`'S, not one of ours — open, hooked, in_progress,
+   blocked, deferred, closed — for the same reason the board's columns are (gc-5u3): a
+   second spelling of a fact that already has one is a fact with two answers. The chips
+   are read off the plans actually in hand, so a status this console has never heard of
+   gets a chip rather than a silent omission, and a status nobody is using does not
+   spend a tap target. `active` is the one grouping on top of that vocabulary and it is
+   defined by subtraction — everything the store has not closed, said in those words on
+   the page — so it can never disagree with the statuses beside it.
+
+   Note what this tab does NOT do: workLane()'s "being worked" substitution belongs to
+   the two surfaces that ask what is happening right now. This one asks what was
+   written down, its rows are read against the store's own word, and a derived lane
+   here would be a third spelling of a bead's state on a tab that has no use for it. */
+
+/* The statuses in the order work moves in, which is not the order `bd` prints them.
+   Only the ones the plans in hand actually use get a chip — see planStatusChips(). */
+const PLAN_STATUSES = ["open", "hooked", "in_progress", "blocked", "deferred", "closed"];
+const PLAN_ACTIVE = "active";
+const PLAN_ALL = "all";
+/** A status as a chip reads it: `bd`'s word, in sentence case, underscore spelled out.
+    A bead with no status at all is a real shape in this store and gets said out loud. */
+const planStatusLabel = (k) => (k === "?" ? "No status"
+  : k.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase()));
+
+/** Whether a plan survives the status chip. `active` is every status except closed —
+    deferred and blocked included, because a parked plan is a decision somebody may want
+    back and history is exactly the thing this filter is separating out. */
+function planStatusOk(b) {
+  if (state.plansStatus === PLAN_ALL) return true;
+  if (state.plansStatus === PLAN_ACTIVE) return !isClosed(b);
+  return beadStatus(b) === state.plansStatus;
+}
 
 function plansModel() {
   const m = backlogModel("all");
@@ -3253,9 +3295,41 @@ function plansModel() {
   // acceptance criteria on this bead. The board draws it as a chip; here it is the
   // membership rule for the whole tab.
   const all = m.items.filter((b) => b.plan);
-  const inRig = all.filter((b) => state.plansRig === "all" || b.rig === state.plansRig);
-  const shown = byNewest(inRig.filter((b) => beadMatches(b, state.plansq)), BEAD_DATE);
-  return { m, all, shown };
+  // Everything held back, attributed to exactly ONE reason each — the first that
+  // applies — so the counts below sum to precisely what is not on screen and no bead is
+  // counted twice by two filters that both exclude it.
+  const hid = { status: [], rig: 0, q: 0 };
+  const shown = [];
+  for (const b of all) {
+    if (!planStatusOk(b)) hid.status.push(b);
+    else if (!(state.plansRig === "all" || b.rig === state.plansRig)) hid.rig += 1;
+    else if (!beadMatches(b, state.plansq)) hid.q += 1;
+    else shown.push(b);
+  }
+  return { m, all, shown: byNewest(shown, BEAD_DATE), hid };
+}
+
+/** What is not on screen and why, in words and in the store's own status names.
+    "A filtered list that looks like the whole list" is a failure this console has hit
+    more than once, and a bare "5" above a list of five is exactly that shape — so the
+    number is never the whole answer here. Empty when nothing is being held back, which
+    is the only time a reader is owed nothing. */
+function plansHiddenNote(hid) {
+  const byStatus = {};
+  hid.status.forEach((b) => {
+    const k = statusWord(b);
+    byStatus[k] = (byStatus[k] || 0) + 1;
+  });
+  // Biggest group first — with seventeen closed and one blocked, the seventeen is the
+  // sentence and the one is the footnote.
+  const words = byKey(Object.keys(byStatus), (k) => `${String(999 - byStatus[k]).padStart(4, "0")}${k}`)
+    .map((k) => `${byStatus[k]} ${k}`);
+  const parts = [
+    words.length ? listWords(words) : "",
+    hid.rig ? `${hid.rig} in other rigs` : "",
+    hid.q ? `${hid.q} not matching the search` : "",
+  ].filter(Boolean);
+  return parts.length ? `Hiding ${parts.join(" · ")}.` : "";
 }
 
 /** One row of the index. The title wraps rather than clipping — this is the list
@@ -3284,17 +3358,22 @@ function planRow(m, b) {
     </button>`;
 }
 
-function plansIndexHtml(m, shown, all) {
+function plansIndexHtml(m, shown, all, hid) {
+  const hidden = plansHiddenNote(hid);
   const head = `<div class="plans-index-head">
     <h2 class="section-head">Plans <span class="muted">${
   shown.length === all.length ? all.length : `${shown.length} of ${all.length}`}</span></h2>
     <p class="plans-index-note muted">Beads carrying a proposed plan or acceptance
-      criteria, newest first.</p>
+      criteria, newest first.${state.plansStatus === PLAN_ACTIVE
+    ? " Active is everything the store has not closed." : ""}</p>
+    ${hidden ? `<p class="plans-index-hid">${esc(hidden)}</p>` : ""}
   </div>`;
   if (loadingOf("backlog")) return head + SKEL;
   const rows = shown.length
     ? `<div class="stack plans-list">${shown.map((b) => planRow(m, b)).join("")}</div>`
-    : empty(all.length ? "No plan matches that filter"
+    // The head above already says what is being held back and this box sits two lines
+    // under it — so it says what to do about it rather than the same sentence twice.
+    : empty(all.length ? "No plan matches these filters — widen the status or the rig."
       : "Nothing in this town has a plan written on it yet — draft one from the Board tab, "
         + "or ask an agent to.");
   return head + errNote("backlog") + rows;
@@ -3389,18 +3468,23 @@ function paintPlansDoc(m) {
 }
 
 function renderPlans() {
-  const { m, all, shown } = plansModel();
-  $("#pill-plans").textContent = all.length;
+  const { m, all, shown, hid } = plansModel();
+  // The pill counts LIVE plans across the whole town rather than every plan ever
+  // written — the same reason the tab opens on them. It is deliberately not the number
+  // in the list beside it: a pill that moved when you picked a rig or typed in the
+  // filter box would be reporting the filter (the Board's pill says the same thing
+  // about its own count).
+  $("#pill-plans").textContent = all.filter((b) => !isClosed(b)).length;
   if (state.plansRig !== "all" && !m.rigs.some((r) => r.rig === state.plansRig)) {
     state.plansRig = "all";
   }
-  renderPlansChips(m);
+  renderPlansChips(m, all);
 
   const idx = $("#plans-index");
   const d = document.activeElement && document.activeElement.dataset;
   const want = d && d.plan ? key2(d.rig, d.plan) : "";
   const top = idx.scrollTop;
-  idx.innerHTML = plansIndexHtml(m, shown, all);
+  idx.innerHTML = plansIndexHtml(m, shown, all, hid);
   idx.scrollTop = top;
   if (want) {
     $$("#plans-index [data-plan]")
@@ -3428,13 +3512,46 @@ function renderPlans() {
   if (!mine) $("#plans-form").innerHTML = "";
 }
 
-function renderPlansChips(m) {
+/** One chip. `aria-pressed` because `.is-active` is a colour and a weight, and a filter
+    that is only ever ON in colour is a filter a screen reader cannot read the state of
+    — which matters more here than anywhere else on the page, since this tab is hiding
+    rows by default. */
+const planChip = (attr, k, label, on) => `<button type="button" class="chip ${
+  on ? "is-active" : ""}" data-${attr}="${esc(k)}" aria-pressed="${on}">${esc(label)}</button>`;
+
+/** Write one chip group, keeping the keyboard's place. Chips are controls and this
+    group is rebuilt by the 8s poll AND by its own click, so focus is restored by key
+    exactly the way the index rows and the board cards are — otherwise picking a status
+    with the keyboard would drop the reader back to the top of the page. */
+function paintPlanChips(el, html) {
+  const held = el.contains(document.activeElement) ? document.activeElement.dataset : null;
+  const was = held ? held.plrig || held.plst || "" : "";
+  el.innerHTML = html;
+  if (was) $$("[data-plrig], [data-plst]", el).find((n) => (n.dataset.plrig || n.dataset.plst) === was)?.focus();
+}
+
+/** The status chips: the two groupings, then every status the plans in hand actually
+    carry, in the order work moves in. A status this table does not name still gets a
+    chip (sorted, at the end) rather than being silently unreachable, and the current
+    selection always keeps its chip even when it now matches nothing — a filter you can
+    enter and not leave is a trap. */
+function planStatusChips(all) {
+  const seen = new Set(all.map((b) => beadStatus(b)));
+  const known = PLAN_STATUSES.filter((k) => seen.has(k));
+  const extra = [...seen].filter((k) => !PLAN_STATUSES.includes(k)).sort();
+  const keys = [...known, ...extra];
+  const sel = state.plansStatus;
+  if (sel !== PLAN_ACTIVE && sel !== PLAN_ALL && !keys.includes(sel)) keys.push(sel);
+  return [[PLAN_ACTIVE, "Active"], [PLAN_ALL, "All"],
+    ...keys.map((k) => [k, planStatusLabel(k)])];
+}
+
+function renderPlansChips(m, all) {
+  paintPlanChips($("#plans-status-chips"), planStatusChips(all)
+    .map(([k, label]) => planChip("plst", k, label, state.plansStatus === k)).join(""));
   const names = byKey(m.rigs.map((r) => r.rig), (n) => (n === "town" ? "0" : `1${n}`));
-  $("#plans-chips").innerHTML = [["all", "All rigs"], ...names.map((n) => [n, n])]
-    .map(([k, label]) => `<button class="chip ${state.plansRig === k ? "is-active" : ""}"
-      data-plrig="${esc(k)}">${esc(label)}</button>`).join("");
-  $$("#plans-chips [data-plrig]").forEach((b) =>
-    (b.onclick = () => { state.plansRig = b.dataset.plrig; renderPlans(); }));
+  paintPlanChips($("#plans-chips"), [["all", "All rigs"], ...names.map((n) => [n, n])]
+    .map(([k, label]) => planChip("plrig", k, label, state.plansRig === k)).join(""));
 }
 
 function selectPlan(rig, id) {
@@ -3509,6 +3626,13 @@ $("#plans-q").oninput = (e) => { state.plansq = e.target.value.toLowerCase(); re
 // One delegated listener over the tab, for the same reason the Board has one: the index
 // and the document are both replaced wholesale on every render.
 $("#view-plans").addEventListener("click", (ev) => {
+  // The chips are in here too, and they are rewritten by every render — a per-button
+  // handler would have to be re-bound each time, and the one that was just clicked
+  // would be a different element by the time it finished.
+  const rig = ev.target.closest("[data-plrig]");
+  if (rig) { state.plansRig = rig.dataset.plrig; return void renderPlans(); }
+  const st = ev.target.closest("[data-plst]");
+  if (st) { state.plansStatus = st.dataset.plst; return void renderPlans(); }
   if (ev.target.closest("[data-close-pane]")) return void closeForm();
   const open = ev.target.closest("[data-form]");
   if (open) return void openForm(open.dataset.form, "plans");

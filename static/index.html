@@ -163,14 +163,24 @@
        It is the same read (`backlog`, plus `GET /api/bead` for the prose) and the same
        two writes the Board tab already has: the bead editor with gc-ebv's conflict
        handling, and a mail composer that wakes an agent about THIS bead. Nothing new is
-       posted from here, and nothing here approves or dispatches anything. -->
+       posted from here, and nothing here approves or dispatches anything.
+       It opens on the plans that are not closed (gc-6z8). A town finishes most of what
+       it plans — nineteen plans, two of them live, when this was written — so the
+       unfiltered list is a history book with this week's work buried in it. The finished
+       ones are one chip away, and the count says how many are being held back. -->
   <section class="view" id="view-plans">
     <div class="toolbar">
       <div class="search">
         <svg viewBox="0 0 24 24" class="ico"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
         <input id="plans-q" type="search" placeholder="Filter plans by title, id or assignee…" autocomplete="off">
       </div>
-      <div class="chips" id="plans-chips"></div>
+      <!-- Two groups rather than one row of chips meaning two different things: a town
+           finishes most of the plans it writes, so status is the filter that decides
+           whether this tab is this week's work or a history book, and it opens on
+           Active. Both groups are named for a screen reader, because "All" and "All
+           rigs" side by side are otherwise two chips that read almost the same. -->
+      <div class="chips" id="plans-status-chips" role="group" aria-label="Filter plans by status"></div>
+      <div class="chips" id="plans-chips" role="group" aria-label="Filter plans by rig"></div>
     </div>
     <!-- A live region has to be in the document BEFORE its text changes to be announced,
          and the beat that says "an agent revised this while you were reading" is markup

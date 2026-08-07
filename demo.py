@@ -152,6 +152,10 @@ def prose(backlog_block):
       wp-122  a blocked card, so the pane's blocked-by list has something real above
               prose that says what the block is actually about.
       wp-90   closed with a reason, and notes underneath it — the retro case.
+      hq-33p  THE PLANS TAB'S OTHER CASE (gc-6z8): a plan that is FINISHED. Most plans a
+      wp-98   town has ever written are, which is why that tab opens on the ones that
+      ma-9    are not — so three of these carry a plan into the closed column, in three
+              different rigs, and the default filter has something real to hold back.
 
     Most beads carry nothing, which is also true of most real beads: the pane says so
     rather than drawing four empty headings."""
@@ -162,6 +166,16 @@ def prose(backlog_block):
                         "them share a dependency. Freeze order matters.",
                 "acceptance": "A written order of freeze, agreed by each rig's witness, "
                               "with the shared dependency named explicitly.",
+            },
+            "hq-33p": {
+                "design": "The retry wrapper re-sends whatever the last call was, and "
+                          "the escalation path calls notify() first — so a retry sends "
+                          "the notification twice and the escalation never. Move the "
+                          "retry inside the escalation call rather than around the pair.",
+                "acceptance": "A failed escalation retries the escalation; a reader of "
+                              "the mail log sees one notification per event.",
+                "reason": "Fixed in gt 0.9.4 — the retry loop was re-sending the "
+                          "notification instead of the escalation.",
             },
         },
         "web_platform": {
@@ -206,6 +220,15 @@ def prose(backlog_block):
                 "notes": "Waiting on wp-120: the key is derived from the session id, "
                          "so the rotation has to land first or the key changes under "
                          "the retry.",
+            },
+            "wp-98": {
+                "design": "Per-request memo rather than a shared cache: the table is "
+                          "read four times in one render and never twice in one second "
+                          "across requests, so a TTL would only add a way to serve a "
+                          "stale price.",
+                "acceptance": "One query per request for the pricing table; no shared "
+                              "state between requests.",
+                "reason": "Merged in #479.",
             },
             "wp-90": {
                 "reason": "Closed without a change: the second copy is the one every "
@@ -279,6 +302,13 @@ OPEN QUESTIONS — these change the shape, so answer before building:
             },
         },
         "mobile_app": {
+            "ma-9": {
+                "acceptance": "An empty push payload is dropped with a log line and no "
+                              "crash; the case is covered by a test on both platforms.",
+                "notes": "The payload is empty when the sender omits `data` entirely, "
+                         "which the marketing tool does on every silent push.",
+                "reason": "Merged in #471.",
+            },
             "ma-18": {
                 "desc": "Push tokens are not re-registered after a device restore, so "
                         "a restored phone silently stops receiving notifications.",
@@ -568,9 +598,12 @@ def fixtures():
                   1, "in_progress", assignee="mayor/", plan=True, minutes=3),
             _bead("hq-e2u", "Patrol wisps invisible to hook reporting", "bug", 1, hours=1),
             _bead("hq-48m", "Adopting an existing repo skips provisioning", "bug", 2, hours=6),
+            # A FINISHED plan. Most plans a town has ever written are this — see the
+            # note in the Plans tab's section of app.js — so the fixture has to carry
+            # enough of them for the default filter to visibly hold something back.
             _bead("hq-33p", "Escalations were mailed twice on every retry", "bug", 1,
-                  "closed", reason="Fixed in gt 0.9.4 — the retry loop was re-sending "
-                  "the notification instead of the escalation.", days=2),
+                  "closed", plan=True, reason="Fixed in gt 0.9.4 — the retry loop was "
+                  "re-sending the notification instead of the escalation.", days=2),
         ], scaffolding=2),
         _backlog_rig("web_platform", [
             _bead("wp-110", "Design system: consolidate 6 button variants into 2", "epic",
@@ -616,7 +649,7 @@ def fixtures():
                   1, hours=2),
             _bead("wp-104", "Checkout flow loses cart on slow networks", "bug", 1, hours=4),
             _bead("wp-98", "Cache the pricing table per request", "task", 2, "closed",
-                  parent="wp-110", reason="Merged in #479.", hours=3),
+                  parent="wp-110", plan=True, reason="Merged in #479.", hours=3),
             _bead("wp-90", "Drop the second copy of the date formatter", "chore", 3,
                   "closed", reason="Closed without a change: the second copy is the one\n"
                   "every screen imports, and the 'original' has no call sites left.\n"
@@ -657,7 +690,7 @@ def fixtures():
             _bead("ma-18", "Push tokens are not re-registered after a restore", "bug", 2,
                   "blocked", hours=30),
             _bead("ma-9", "Fix crash on empty push payload", "bug", 1, "closed",
-                  reason="Merged in #471.", days=1),
+                  plan=True, reason="Merged in #471.", days=1),
             # Closed with no reason recorded — most beads are. It has nothing under the
             # fold, so it must draw as a row rather than as a button onto an empty box.
             _bead("ma-4", "Bump the crash reporter past the 3.x deprecations", "chore", 3,
