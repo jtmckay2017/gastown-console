@@ -202,19 +202,20 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 .badge.warn { background: color-mix(in srgb, var(--yellow) 14%, transparent); border-color: color-mix(in srgb, var(--yellow) 40%, transparent); color: var(--yellow); }
 .badge.epic { background: color-mix(in srgb, var(--purple) 14%, transparent); border-color: color-mix(in srgb, var(--purple) 40%, transparent); color: var(--purple); }
 
-/* ---------- agents ---------- */
-.agent {
+/* ---------- expandable rows (agents, convoys) ---------- */
+.agent, .convoy {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius-sm); box-shadow: var(--shadow); overflow: hidden;
 }
-.agent:hover { border-color: var(--faint); }
-.agent-row {
+.agent:hover, .convoy:hover { border-color: var(--faint); }
+.agent-row, .convoy-row {
   width: 100%; min-height: 52px; text-align: left; cursor: pointer;
   background: none; border: 0; border-radius: 0;
 }
-.agent-row:focus-visible { outline: 2px solid var(--blue); outline-offset: -3px; }
+.agent-row:focus-visible, .convoy-row:focus-visible { outline: 2px solid var(--blue); outline-offset: -3px; }
 /* spans, not divs, so the markup stays valid inside a <button> */
-.agent-row .row-main, .agent-row .title { display: block; }
+.agent-row .row-main, .agent-row .title,
+.convoy-row .row-main, .convoy-row .title { display: block; }
 
 /* The working agent is the answer this tab exists to give: tinted, edged in blue,
    with a live dot. It has to survive a five-row scan on a phone. */
@@ -241,8 +242,17 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 }
 .agent.is-staged .agent-note { color: var(--yellow); }
 
+/* The bead the agent is holding. Louder than the pane note above it — the note is
+   flavour, this is the answer — and prefixed so it cannot be mistaken for one. */
+.agent-work {
+  display: block; margin-top: 4px; font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.agent-work::before { content: "on "; color: var(--faint); }
+
 .chev { color: var(--faint); transition: transform .15s; }
-.agent-row[aria-expanded="true"] .chev { transform: rotate(90deg); }
+.agent-row[aria-expanded="true"] .chev,
+.convoy-row[aria-expanded="true"] .chev { transform: rotate(90deg); }
 
 .agent-detail {
   padding: 11px 13px; background: var(--surface-2); border-top: 1px solid var(--border-soft);
@@ -256,7 +266,33 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 @media (prefers-reduced-motion: reduce) {
   .agent.is-working .dot.busy { animation: none; }
   .chev { transition: none; }
+  .bar-fill { transition: none; }
 }
+
+/* ---------- work in flight ---------- */
+/* A bead whose agent's screen says a turn is running. Deliberately the same blue as
+   the Agents tab's working row: it is one fact said twice, from two directions. */
+.flight.is-live {
+  border-color: color-mix(in srgb, var(--blue) 55%, transparent);
+  box-shadow: inset 3px 0 0 var(--blue), var(--shadow);
+}
+/* What the agent holding this bead is doing right now. Agent-authored text reaches
+   this line through panes.py, so it is clipped by the server and escaped here. */
+.flight-live {
+  margin-top: 4px; font-size: 12px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.flight.is-live .flight-live { color: var(--blue); }
+
+.convoy .bar-track { display: block; margin-top: 9px; }
+.convoy-detail { padding: 2px 6px 6px; background: var(--surface-2); border-top: 1px solid var(--border-soft); }
+.convoy-item + .convoy-item { border-top: 1px solid var(--border-soft); }
+
+/* Section headings on the Work tab — a level above the .group-head rows inside each
+   one, which label states and sources rather than sections. */
+.section + .section { margin-top: 24px; }
+.section-head { display: flex; align-items: baseline; gap: 9px; margin: 0 2px 10px; font-size: 15px; }
+.section-head .muted { font-size: 12px; font-weight: 400; }
 
 /* ---------- rigs ---------- */
 .rig { padding: 12px; border-radius: var(--radius-sm); }

@@ -31,6 +31,20 @@ def _issue(id_, title, priority, type_="task", parent=None, hours=3):
             "updated_at": _ago(hours=hours), "description": ""}
 
 
+def _flight(id_, title, priority, status, assignee, rig, type_="task", **ago):
+    """One entry of the `flight` read, shaped exactly as flight.in_flight() returns it
+    — already projected down, so no description and no acceptance criteria."""
+    return {"id": id_, "title": title, "priority": priority, "issue_type": type_,
+            "status": status, "assignee": assignee, "rig": rig, "parent": None,
+            "created_at": _ago(days=2), "updated_at": _ago(**ago)}
+
+
+def _tracked(id_, title, status, assignee=""):
+    """One entry of a convoy's `tracked` list, as `gt convoy list --json` carries it."""
+    return {"id": id_, "title": title, "status": status, "assignee": assignee,
+            "dependency_type": "tracks", "issue_type": "task"}
+
+
 def fixtures():
     # mobile_app is parked: a healthy state that used to be indistinguishable from a
     # crash, so the demo has to contain one. Its agents are stopped and stay stopped.
@@ -214,8 +228,40 @@ def fixtures():
             {"id": "ba-29", "title": "Backfill missing customer tax ids", "type": "chore",
              "rig": "billing_api", "closed_at": _ago(hours=7), "close_reason": "Merged in #477"},
         ],
+        # `gt convoy list --json`, real shape: a convoy carries its own progress and
+        # the beads it tracks, each with the agent holding it. The tracked ids are the
+        # in-flight ones above on purpose — expanding a convoy must land on the same
+        # beads the In flight list is showing, or the tab is two widgets, not one view.
         "convoys": [
-            {"id": "cv-3", "name": "checkout-hardening", "rig": "web_platform",
-             "issues": 4, "done": 2, "created_at": _ago(days=1)},
+            {"id": "hq-cv-8kq", "title": "Work: checkout hardening", "status": "open",
+             "created_at": _ago(days=1), "completed": 1, "total": 3,
+             "tracked": [
+                 _tracked("wp-120", "Rotate the session cookie on privilege change",
+                          "hooked", "web_platform/polecats/Toast"),
+                 _tracked("wp-122", "Checkout retry needs the new idempotency key", "blocked"),
+                 _tracked("wp-98", "Cache the pricing table per request", "closed"),
+             ]},
+            {"id": "hq-cv-2rd", "title": "Work: split-refund rounding", "status": "open",
+             "created_at": _ago(hours=5), "completed": 0, "total": 1,
+             "tracked": [_tracked("ba-40", "Reconcile split-refund rounding against the ledger",
+                                  "in_progress", "billing_api/Toast")]},
+        ],
+        # The `flight` read: not open, not closed — see flight.py. Two things the demo
+        # has to contain, because both are load-bearing and neither is obvious:
+        # wp-120's assignee is spelled web_platform/polecats/Toast while the agent's
+        # own address is web_platform/Toast, which is the real spelling mismatch
+        # addrKeys() exists to bridge; and wp-121 sits with Slit, whose pane is idle —
+        # a bead on a hook is not the same as a turn in flight, and the row says both.
+        "flight": [
+            _flight("wp-120", "Rotate the session cookie on privilege change", 1,
+                    "hooked", "web_platform/polecats/Toast", "web_platform", "bug", minutes=6),
+            _flight("wp-121", "Consolidate the button variants behind shared tokens", 2,
+                    "hooked", "web_platform/Slit", "web_platform", minutes=52),
+            _flight("ba-40", "Reconcile split-refund rounding against the ledger", 0,
+                    "in_progress", "billing_api/Toast", "billing_api", "bug", minutes=22),
+            _flight("hq-51c", "Draft the cross-rig freeze plan for the release", 1,
+                    "in_progress", "mayor/", "town", minutes=3),
+            _flight("wp-122", "Checkout retry needs the new idempotency key", 2,
+                    "blocked", "", "web_platform", hours=4),
         ],
     }

@@ -24,8 +24,8 @@ not a module; `static/app.css` is hand-written CSS with custom properties.
   cadence into `_cache`. Cadences live in the `READS` table — that table is the single place a
   read is declared: name → (source, refresh interval). A source is normally `gt` argv; it may
   also be a callable returning `(data, error)`, for a read that is not a `gt` call at all (the
-  `models` panel, see `models.py`; the `panes` panel, see `panes.py`). Adding a read means
-  adding a row here, nowhere else.
+  `models` panel, see `models.py`; the `panes` panel, see `panes.py`; the `flight` panel,
+  see `flight.py`). Adding a read means adding a row here, nowhere else.
 - HTTP handlers **only read `_cache`**. `GET /api/snapshot` returns every panel plus its age;
   `GET /api/panel/<name>` returns one panel in the same shape (debug convenience — the UI uses
   only `/api/snapshot` and `POST /api/mail`).
@@ -38,15 +38,17 @@ not a module; `static/app.css` is hand-written CSS with custom properties.
 
 Any change that makes a handler block on a subprocess is wrong, no matter how fast it looks on
 a quiet town. Measure on a busy town, not yours. The rule is about slow work, not subprocesses
-specifically — `models.py` reads the filesystem rather than shelling out, and `panes.py` shells
-out to `tmux` rather than to `gt`; both live behind the same scheduler for the same reason.
-`panes` costs one `capture-pane` per session in town, which is milliseconds each and still has
-no business on a request path.
+specifically — `models.py` reads the filesystem rather than shelling out, `panes.py` shells out
+to `tmux` rather than to `gt`, and `flight.py` shells out to `bd`; all three live behind the
+same scheduler for the same reason. `panes` costs one `capture-pane` per session in town and
+`flight` one `bd list` per beads repo, which is milliseconds each and still has no business on
+a request path.
 
 There are now **no exceptions**: `refresh()` is called only from the scheduler pool, and it
 returns immediately under `--demo` so no read path can shell out — or touch a real transcript,
-or a real tmux socket — with fixtures loaded. Every place that spawns a subprocess (`refresh()`,
-`send_mail()`, and `panes.py` beneath `refresh()`) is demo-guarded. Keep it that way.
+or a real tmux socket, or a real beads repo — with fixtures loaded. Every place that spawns a
+subprocess (`refresh()`, `send_mail()`, and `panes.py`/`flight.py` beneath `refresh()`) is
+demo-guarded. Keep it that way.
 
 ## Security posture
 
@@ -77,6 +79,7 @@ Other things not to erode:
 | `demo.py` | Synthetic fixtures for `--demo`. |
 | `models.py` | The `models` read: which model each agent runs, from its Claude Code transcript. |
 | `panes.py` | The `panes` read: what each agent is *doing*, from its tmux screen. `gt`'s `state` field means "has a bead on its hook", not "is working", so this is the console's only source of activity. |
+| `flight.py` | The `flight` read: every bead that is neither open nor closed, and who holds it. `gt ready` drops a bead the moment it is picked up and no `gt` read carries an agent's work, so this is the only answer to "what is being worked on". Shells out to `bd`, once per beads repo in town. |
 | `static/index.html` | The whole page skeleton; every panel is an empty `<div id=…>`. |
 | `static/app.js` | Fetch, state, and all rendering. Vanilla JS, no framework. |
 | `static/app.css` | Themes via `:root` custom properties + `:root[data-theme="light"]`. |
@@ -111,6 +114,10 @@ that way rather than "simplifying":
 - `app.js` uses `pick(obj, [...aliases])` for fields whose spelling varies (`read`/`is_read`,
   `from`/`sender`/`from_address`, `at`/`created_at`/`timestamp`), tolerates a list *or* an
   object for `trail`, and defaults everything.
+- An agent's address and a bead's assignee name the same agent and spell it differently —
+  `gastown_console/chrome` on one side, `gastown_console/polecats/chrome` on the other, and
+  crew carries `/crew/` in the address instead. `addrKeys()` in `app.js` indexes both sides
+  under both spellings; never assume either one is canonical.
 - Renderers must survive `null` data, an error string, and a still-loading panel — that is
   what `loadingOf()`, `errNote()`, and the skeleton placeholders are for.
 

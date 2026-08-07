@@ -19,6 +19,8 @@ const MAIL_DATE = ["created_at", "sent_at", "timestamp"];
 const ESC_DATE = ["created_at", "at", "timestamp", "updated_at"];
 const TRAIL_DATE = ["at", "created_at", "timestamp", "time", "updated_at"];
 const WORK_DATE = ["updated_at", "created_at"];
+const FLIGHT_DATE = ["updated_at", "created_at"];
+const CONVOY_DATE = ["created_at", "updated_at", "at"];
 
 /** Epoch millis for a gt timestamp (ISO string or epoch seconds), or null. */
 function stamp(v) {
@@ -66,6 +68,8 @@ const state = {
   // Agents tab: which rows are expanded, keyed by agent address. Lives here rather
   // than in the DOM because every render replaces #agents wholesale — see renderAgents.
   expanded: new Set(),
+  // Same, for the convoy rows on the Work tab, keyed by convoy id.
+  convoys: new Set(),
 };
 
 /* ---------------- theme ---------------- */
@@ -143,7 +147,7 @@ function render() {
   renderEscalations();
   renderPriority();
   renderChangelog();
-  renderWork();
+  renderWorkView();
   renderAgents(status);
   renderMail();
   renderTrail();
@@ -234,9 +238,18 @@ function renderKpis(s) {
   const esc_ = dataOf("escalations", []) || [];
   const mail = dataOf("mail", []) || [];
   const unread = mail.filter((m) => !pick(m, ["read", "is_read"], false)).length;
+  // Who is working, then what they are working on — the second half of the question
+  // the first half raises. Both are counts of the same town, from different reads.
+  const inflight = dataOf("flight", []) || [];
+  const blocked = inflight.filter((b) => flightState(b).key === "blocked").length;
+  const convoys = (dataOf("convoys", []) || [])
+    .filter((c) => String(c.status || "").toLowerCase() !== "closed").length;
   const cards = [
     { v: `${busy}/${agents.length}`, l: "Agents working", cls: busy ? "good" : "",
       sub: `${up} up${stuck ? ` · ${stuck} with input staged` : ""}` },
+    { v: inflight.length, l: "Work in flight", cls: inflight.length ? "good" : "",
+      sub: `${inflight.length - blocked} moving${blocked ? ` · ${blocked} blocked` : ""}`
+        + `${convoys ? ` · ${convoys} convoy${convoys === 1 ? "" : "s"}` : ""}` },
     { v: num(s.summary?.rig_count), l: "Rigs", sub: `${num(s.summary?.polecat_count)} polecats · ${num(s.summary?.crew_count)} crew` },
     { v: num(ready.summary?.total), l: "Ready work", sub: `P1 ${num(ready.summary?.p1_count)} · P2 ${num(ready.summary?.p2_count)}` },
     { v: num(s.summary?.active_hooks), l: "Active hooks", sub: "work on an agent" },
@@ -329,30 +342,292 @@ function renderChangelog() {
     </div>`).join("") : empty("Nothing closed yet"));
 }
 
-/* ---------------- work ---------------- */
-$("#work-q").oninput = (e) => { state.q = e.target.value.toLowerCase(); renderWork(); };
+/* ---------------- work ----------------
+   This tab answers "what is happening in this town right now", and no single read
+   answers it. Three do, and stitching them is the whole job:
 
-function renderWork() {
+     flight   which beads are in flight        (bd, one call per rig — see flight.py)
+     status   which agent each one sits with   (correlated by address — see addrKeys)
+     panes    what that agent is doing this second   (the read gc-vy3 introduced)
+
+   Alone each one is a half-answer. `gt status` carries no bead field on an agent,
+   `gt ready` drops a bead the moment somebody picks it up, and a pane says a turn is
+   in flight without saying what about. Joined they say "Toast holds wp-120, and its
+   screen says it is running tests", which is what was asked for. Convoys sit on the
+   same tab because they are the town's own answer to "how far along" — the progress
+   dimension over the same beads, not a fourth widget.
+
+   The sections read top to bottom as one sentence: what is moving, how far along it
+   is, what could be started next. One filter bar drives all three. */
+
+/* An agent's address and a bead's assignee name the same agent and do not spell it
+   the same way. `gt status` calls this polecat gastown_console/chrome; the bead on
+   its hook says assignee gastown_console/polecats/chrome. Crew runs the other way —
+   there the address itself carries the /crew/ segment. So neither spelling is
+   canonical: index each side under both its raw form and the form with the role
+   segment dropped, and treat a hit on either as a match. */
+const ROLE_SEG = new Set(["polecats", "polecat", "crew", "crews", "agents"]);
+function addrKeys(addr) {
+  const raw = String(addr ?? "").trim().toLowerCase().replace(/\/+$/, "");
+  if (!raw) return [];
+  const parts = raw.split("/").filter(Boolean);
+  const bare = parts.filter((p, i) => !(i > 0 && i < parts.length - 1 && ROLE_SEG.has(p))).join("/");
+  return bare && bare !== raw ? [raw, bare] : [raw];
+}
+
+/** Beads in flight, newest-first, plus an index from agent address to the beads that
+    agent holds. Built once and read by both tabs — the Work tab draws the list, the
+    Agents tab looks up its own row — so the two can never disagree. */
+function flightModel() {
+  const items = byNewest(dataOf("flight", []) || [], FLIGHT_DATE);
+  const byAgent = new Map();
+  for (const b of items) {
+    for (const k of addrKeys(b.assignee)) {
+      if (!byAgent.has(k)) byAgent.set(k, []);
+      byAgent.get(k).push(b);
+    }
+  }
+  return { items, byAgent };
+}
+
+/** What one agent is holding. Both spellings are looked up and the results merged,
+    because a town can carry beads filed under each. */
+function flightFor(fm, address) {
+  const out = [], seen = new Set();
+  for (const k of addrKeys(address)) {
+    for (const b of fm.byAgent.get(k) || []) {
+      if (!seen.has(b.id)) { seen.add(b.id); out.push(b); }
+    }
+  }
+  return out;
+}
+
+/** address -> agent, under both spellings, so a bead can find who is holding it. */
+function agentIndex(agents) {
+  const ix = new Map();
+  for (const a of agents) for (const k of addrKeys(a.address)) if (!ix.has(k)) ix.set(k, a);
+  return ix;
+}
+function agentFor(ix, assignee) {
+  for (const k of addrKeys(assignee)) { const a = ix.get(k); if (a) return a; }
+  return null;
+}
+
+/* The stored statuses that are neither open nor closed (see flight.py). `hooked` is
+   the one that matters most and the one nobody expects: it is what `gt sling` sets,
+   so it is where nearly all live work sits. Order is reading order — what is moving
+   first, what is stuck last, where it cannot be missed at the end of a short list. */
+const FLIGHT_STATES = [
+  { key: "in_progress", label: "In progress", hint: "claimed by an agent", badge: "ok" },
+  { key: "hooked",      label: "On a hook",   hint: "slung to an agent — this town's usual shape", badge: "ok" },
+  { key: "blocked",     label: "Blocked",     hint: "stalled behind something else", badge: "bad" },
+  { key: "other",       label: "In flight",   hint: "neither open nor closed",   badge: "" },
+];
+const flightState = (b) => FLIGHT_STATES.find((x) => x.key === String(b.status || "").toLowerCase())
+  || FLIGHT_STATES[FLIGHT_STATES.length - 1];
+
+/** The one filter bar over the tab. Applied to in-flight beads and ready issues
+    alike — they are the same kind of thing at different moments of their life, and a
+    filter that hid one but not the other would be lying about the other. */
+function matches(o, source) {
+  if (state.source !== "all" && source !== state.source) return false;
+  if (state.prio !== "all" && String(o.priority) !== state.prio) return false;
+  if (!state.q) return true;
+  return `${o.id} ${o.title} ${source} ${o.assignee || ""}`.toLowerCase().includes(state.q);
+}
+
+$("#work-q").oninput = (e) => { state.q = e.target.value.toLowerCase(); renderWorkView(); };
+
+function renderWorkView() {
+  const s = dataOf("status", {}) || {};
+  renderWorkChips();
+  renderFlight(s);
+  renderConvoys(s);
+  renderReady();
+}
+
+function renderWorkChips() {
+  // Sources are a fixed set (town + rigs) with no timestamp of their own, so they get
+  // a fixed order, town first. A rig with work in flight but nothing ready still owns
+  // a chip — otherwise the filter could not reach the rows the tab now leads with.
   const ready = dataOf("ready", {}) || {};
-  // Sources are a fixed set (town + rigs) with no timestamp of their own, so the
-  // groups get a fixed order — town first — and the issues inside sort newest-first.
-  const sources = byKey(ready.sources || [], (s) => (s.name === "town" ? "0" : "1" + s.name));
-  const chips = [["all", "All"], ...sources.map((s) => [s.name, s.name])];
-  $("#work-chips").innerHTML = chips.map(([k, label]) =>
+  const names = new Set((ready.sources || []).map((s) => s.name).filter(Boolean));
+  (dataOf("flight", []) || []).forEach((b) => b.rig && names.add(b.rig));
+  const sources = byKey([...names], (n) => (n === "town" ? "0" : "1" + n));
+  $("#work-chips").innerHTML = [["all", "All"], ...sources.map((n) => [n, n])].map(([k, label]) =>
     `<button class="chip ${state.source === k ? "is-active" : ""}" data-src="${esc(k)}">${esc(label)}</button>`).join("")
     + ["all", "1", "2", "3"].map((p) =>
       `<button class="chip ${state.prio === p ? "is-active" : ""}" data-prio="${esc(p)}">${p === "all" ? "Any P" : "P" + p}</button>`).join("");
-  $$("#work-chips [data-src]").forEach((b) => (b.onclick = () => { state.source = b.dataset.src; renderWork(); }));
-  $$("#work-chips [data-prio]").forEach((b) => (b.onclick = () => { state.prio = b.dataset.prio; renderWork(); }));
+  $$("#work-chips [data-src]").forEach((b) => (b.onclick = () => { state.source = b.dataset.src; renderWorkView(); }));
+  $$("#work-chips [data-prio]").forEach((b) => (b.onclick = () => { state.prio = b.dataset.prio; renderWorkView(); }));
+}
 
+/** One bead in flight: what it is, who has it, and — where the agent can be paired
+    with a live pane — what that agent's screen says it is doing about it right now. */
+function flightRow(b, ix, ctx) {
+  const st = flightState(b);
+  const agent = agentFor(ix, b.assignee);
+  const ast = agent ? agentState(agent, ctx) : null;
+  const note = agent ? agentNote(agent, ctx) : "";
+  // The live line is the point of the row: the agent's own screen, one line of it.
+  // When the assignee matches no agent at all, say so — a gap there would read as
+  // "nobody is on it", which is the opposite of what an assignee means.
+  const live = ast ? `${ast.label.toLowerCase()}${note ? ` · ${note}` : ""}`
+    : b.assignee ? "no live session for this assignee" : "";
+  return `
+    <div class="row row-card flight ${ast && ast.key === "working" ? "is-live" : ""}">
+      <i class="dot ${ast ? ast.dot : ""}"></i>
+      <div class="row-main">
+        <div class="title wrap">${esc(b.title)}</div>
+        <div class="sub">
+          <span class="mono">${esc(b.id)}</span>
+          <span>${esc(b.rig || "")}</span>
+          <span>${b.assignee ? esc(b.assignee) : "unassigned"}</span>
+          <span>${esc(ago(pick(b, FLIGHT_DATE)))}</span>
+        </div>
+        ${live ? `<div class="flight-live">${esc(live)}</div>` : ""}
+      </div>
+      <div class="row-side">
+        ${b.issue_type && b.issue_type !== "task" ? `<span class="badge ${b.issue_type === "epic" ? "epic" : ""}">${esc(b.issue_type)}</span>` : ""}
+        ${b.priority == null ? "" : `<span class="badge p${esc(b.priority)}">P${esc(b.priority)}</span>`}
+        <span class="badge ${st.badge}">${esc(st.label)}</span>
+      </div>
+    </div>`;
+}
+
+function renderFlight(s) {
+  if (loadingOf("flight")) return void ($("#flight").innerHTML = SKEL);
+  const fm = flightModel();
+  const ix = agentIndex(allAgents(s));
+  const ctx = agentCtx();
+  const items = fm.items.filter((b) => matches(b, b.rig));
+  $("#flight-count").textContent = !fm.items.length ? ""
+    : items.length === fm.items.length ? `${items.length} in flight`
+      : `${items.length} of ${fm.items.length} in flight`;
+
+  // Status first, so blocked work cannot hide at the bottom of a long list. byNewest
+  // ran in flightModel and byKey is stable, so newest-first survives inside a group.
+  const ordered = byKey(items, (b) => String(FLIGHT_STATES.indexOf(flightState(b))).padStart(2, "0"));
+  const counts = {};
+  ordered.forEach((b) => { const k = flightState(b).key; counts[k] = (counts[k] || 0) + 1; });
+  let last = null;
+  const rows = ordered.map((b) => {
+    const st = flightState(b);
+    const head = st.key === last ? ""
+      : `<div class="group-head">${esc(st.label)} · ${counts[st.key]}
+           <span class="group-hint">${esc(st.hint)}</span></div>`;
+    last = st.key;
+    return head + flightRow(b, ix, ctx);
+  }).join("");
+
+  $("#flight").innerHTML = errNote("flight") + (ordered.length ? rows
+    : empty(fm.items.length ? "Nothing in flight matches that filter" : "Nothing in flight"));
+}
+
+/* ---------------- convoys ----------------
+   A convoy is the town's own unit of tracked work — an id, the beads it tracks, and
+   its own completed/total. The read has been running since it was added and nothing
+   drew it. It belongs beside the in-flight list rather than in a tab of its own: the
+   list says what is moving, the convoy says how much of the batch is left. */
+const convoyKey = (c) => String(pick(c, ["id", "name", "title"], ""));
+const convoyDetailId = (key) => `convoy-detail-${key.replace(/[^a-zA-Z0-9]+/g, "-")}`;
+
+function convoyDetail(c, key, ix, ctx) {
+  // Outstanding first, closed after — the same reason the in-flight list groups by
+  // status. Tracked entries carry no timestamp, so id is the tiebreak.
+  const tracked = (Array.isArray(c.tracked) ? c.tracked : []).filter((t) => t && typeof t === "object");
+  const rows = byKey(tracked, (t) => `${String(t.status || "").toLowerCase() === "closed" ? "1" : "0"} ${t.id || ""}`)
+    .map((t) => {
+      const closed = String(t.status || "").toLowerCase() === "closed";
+      const agent = closed ? null : agentFor(ix, t.assignee);
+      const ast = agent ? agentState(agent, ctx) : null;
+      return `
+        <div class="row convoy-item">
+          <i class="dot ${closed ? "done" : ast ? ast.dot : ""}"></i>
+          <div class="row-main">
+            <div class="title wrap">${esc(t.title || "(untitled)")}</div>
+            <div class="sub">
+              <span class="mono">${esc(t.id || "")}</span>
+              ${t.assignee ? `<span>${esc(t.assignee)}</span>` : ""}
+              ${ast ? `<span>${esc(ast.label.toLowerCase())}</span>` : ""}
+            </div>
+          </div>
+          <div class="row-side"><span class="badge ${closed ? "ok" : ""}">${esc(t.status || "?")}</span></div>
+        </div>`;
+    }).join("");
+  return `<div class="convoy-detail" id="${esc(convoyDetailId(key))}">${rows || empty("Nothing tracked")}</div>`;
+}
+
+function convoyRow(c, ix, ctx) {
+  const key = convoyKey(c);
+  const open = state.convoys.has(key);
+  const tracked = Array.isArray(c.tracked) ? c.tracked : [];
+  const total = num(c.total) || tracked.length;
+  const done = Math.min(num(c.completed), total);
+  const closed = String(c.status || "").toLowerCase() === "closed";
+  return `
+    <div class="convoy">
+      <button type="button" class="row convoy-row" data-convoy="${esc(key)}"
+              aria-expanded="${open}" aria-controls="${esc(convoyDetailId(key))}">
+        <span class="row-main">
+          <span class="title">${esc(pick(c, ["title", "name"], "(untitled convoy)"))}</span>
+          <span class="sub">
+            <span class="mono">${esc(key)}</span>
+            <span>${esc(ago(pick(c, CONVOY_DATE)))}</span>
+            <span>${done} of ${total} landed</span>
+          </span>
+          <span class="bar-track"><span class="bar-fill"
+            style="width:${total ? Math.round((done / total) * 100) : 0}%;background:${closed ? "var(--green)" : "var(--blue)"}"></span></span>
+        </span>
+        <span class="row-side">
+          <span class="badge ${closed ? "ok" : ""}">${esc(c.status || "open")}</span>
+          <svg viewBox="0 0 24 24" class="ico chev" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+        </span>
+      </button>
+      ${open ? convoyDetail(c, key, ix, ctx) : ""}
+    </div>`;
+}
+
+function renderConvoys(s) {
+  if (loadingOf("convoys")) return void ($("#convoys").innerHTML = SKEL);
+  const raw = dataOf("convoys", []) || [];
+  const all = byNewest(Array.isArray(raw) ? raw : (raw.convoys || raw.items || []), CONVOY_DATE);
+  // A convoy has no priority and no single rig, so only the text filter can speak to
+  // it; the other two chips would silently empty the section instead.
+  const items = state.q
+    ? all.filter((c) => `${convoyKey(c)} ${pick(c, ["title", "name"], "")} `
+      .concat((c.tracked || []).map((t) => `${t.id} ${t.title}`).join(" ")).toLowerCase().includes(state.q))
+    : all;
+  const ix = agentIndex(allAgents(s));
+  const ctx = agentCtx();
+  $("#convoy-count").textContent = !all.length ? ""
+    : items.length === all.length ? `${all.length} tracked` : `${items.length} of ${all.length}`;
+
+  const focused = document.activeElement?.dataset?.convoy;
+  $("#convoys").innerHTML = errNote("convoys") + (items.length
+    ? items.map((c) => convoyRow(c, ix, ctx)).join("")
+    : empty(all.length ? "No convoy matches that filter" : "No convoys tracked"));
+  if (focused) $$("#convoys [data-convoy]").find((el) => el.dataset.convoy === focused)?.focus();
+}
+
+// One delegated listener; #convoys is replaced wholesale on every render.
+$("#convoys").addEventListener("click", (ev) => {
+  const row = ev.target.closest("[data-convoy]");
+  if (!row) return;
+  if (!state.convoys.delete(row.dataset.convoy)) state.convoys.add(row.dataset.convoy);
+  renderConvoys(dataOf("status", {}) || {});
+});
+
+/* ---------------- ready ----------------
+   Unblocked and open: what could be started, which is a different question from the
+   two above and now says so by sitting under its own heading. */
+function renderReady() {
+  const ready = dataOf("ready", {}) || {};
+  const sources = byKey(ready.sources || [], (s) => (s.name === "town" ? "0" : "1" + s.name));
   const html = sources
     .filter((s) => state.source === "all" || s.name === state.source)
     .map((s) => {
-      const items = byNewest((s.issues || []).filter((i) => {
-        if (state.prio !== "all" && String(i.priority) !== state.prio) return false;
-        if (!state.q) return true;
-        return `${i.id} ${i.title} ${s.name}`.toLowerCase().includes(state.q);
-      }), WORK_DATE);
+      const items = byNewest((s.issues || []).filter((i) => matches(i, s.name)), WORK_DATE);
       if (!items.length) return "";
       return `<div class="group-head">${esc(s.name)} · ${items.length}</div>` + items.map((i) => `
         <div class="row row-card">
@@ -371,8 +646,11 @@ function renderWork() {
         </div>`).join("");
     }).join("");
 
+  const total = num((ready.summary || {}).total);
+  $("#ready-count").textContent = total ? `${total} unblocked and open` : "";
   $("#work").innerHTML = loadingOf("ready") ? SKEL
-    : errNote("ready") + (html || empty(state.q || state.prio !== "all" ? "Nothing matches that filter" : "No ready work"));
+    : errNote("ready") + (html || empty(state.q || state.prio !== "all" || state.source !== "all"
+      ? "Nothing matches that filter" : "No ready work"));
 }
 
 /* ---------------- agents ----------------
@@ -451,11 +729,12 @@ function agentNote(a, ctx) {
 const agentKey = (a) => String(a.address || `${a.rig}/${a.name || ""}`);
 const detailId = (key) => `agent-detail-${key.replace(/[^a-zA-Z0-9]+/g, "-")}`;
 
-/** Everything gt actually carries per agent, plus the model. There is no work/issue
-    field in `gt status --json` — verified, the key is simply absent — so nothing here
-    claims to show what an agent is working on. `models` is the models panel, keyed by
-    address; it is a separate read because gt carries no model either. */
-function agentDetail(a, models, ctx) {
+/** Everything gt actually carries per agent, plus the two things it does not: the
+    model, and the work. `gt status --json` has no work/issue field — verified, the
+    key is simply absent — so "Working on" is correlated from the flight read by
+    assignee, the same model the Work tab draws. `models` is the models panel, keyed
+    by address; it is a separate read because gt carries no model either. */
+function agentDetail(a, models, ctx, work) {
   const runtime = [a.agent_alias, a.agent_info !== a.agent_alias ? a.agent_info : ""].filter(Boolean).join(" · ");
   const st = agentState(a, ctx);
   const pane = ctx.live ? ctx.panes[a.session || ""] : null;
@@ -466,6 +745,8 @@ function agentDetail(a, models, ctx) {
     // Derived here, from the agent's screen. Directly above gt's own word for the
     // same agent, because the two disagree constantly and both are worth seeing.
     ["Activity", `${st.label} — ${st.hint}`, ""],
+    // What it is doing it to. Every bead, not the two the row has space for.
+    ["Working on", work.map((b) => `${b.id} — ${b.title} (${b.status})`).join(" · "), "wrap"],
     ["Pane", pane ? pane.note || "(no status line)" : "", "wrap"],
     ["Unsent input", pane ? pane.staged : "", "wrap"],
     // What gt calls the state. It tracks the hook, not activity — see AGENT_STATES.
@@ -491,11 +772,16 @@ function agentDetail(a, models, ctx) {
     .join("")}</dl>`;
 }
 
-function agentRow(a, models, ctx) {
+function agentRow(a, models, ctx, work) {
   const st = agentState(a, ctx);
   const key = agentKey(a);
   const open = state.expanded.has(key);
   const note = agentNote(a, ctx);
+  // The bead itself, on the row, because "has work" answers a yes/no question nobody
+  // was asking. Two fit; the rest are counted and shown in full in the detail panel.
+  const held = work.slice(0, 2).map((b) =>
+    `<span class="mono">${esc(b.id)}</span> ${esc(b.title)}`).join(" · ")
+    + (work.length > 2 ? ` <span class="muted">+${work.length - 2} more</span>` : "");
   return `
     <div class="agent ${st.key === "working" ? "is-working" : ""} ${st.key === "staged" ? "is-staged" : ""}">
       <button type="button" class="row agent-row" data-agent="${esc(key)}"
@@ -509,6 +795,7 @@ function agentRow(a, models, ctx) {
             <span class="mono">${esc(a.session || "no session")}</span>
             ${a.unread_mail ? `<span class="badge warn">${esc(a.unread_mail)} mail</span>` : ""}
           </span>
+          ${work.length ? `<span class="agent-work">${held}</span>` : ""}
           ${note ? `<span class="agent-note">${esc(note)}</span>` : ""}
         </span>
         <span class="row-side">
@@ -517,7 +804,7 @@ function agentRow(a, models, ctx) {
           <svg viewBox="0 0 24 24" class="ico chev" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
         </span>
       </button>
-      ${open ? agentDetail(a, models, ctx) : ""}
+      ${open ? agentDetail(a, models, ctx, work) : ""}
     </div>`;
 }
 
@@ -528,6 +815,10 @@ function renderAgents(s) {
   // after the agents themselves land. Missing simply means no Model row.
   const models = dataOf("models", {}) || {};
   const ctx = agentCtx();
+  // The same model the Work tab draws, read from the other end: there the bead finds
+  // its agent, here the agent finds its beads. gc-vy3 owns whether a row is working;
+  // this owns what it is working on.
+  const fm = flightModel();
   // Dogs and loose tmux sessions have no mail address; offering one would bounce.
   $("#agent-addresses").innerHTML = all.filter((a) => a.address)
     .map((a) => `<option value="${esc(a.address)}">`).join("")
@@ -548,16 +839,16 @@ function renderAgents(s) {
       : `<div class="group-head ${st.key === "working" ? "is-working" : ""}">${esc(st.label)} · ${counts[st.key]}
            <span class="group-hint">${esc(st.hint)}</span></div>`;
     last = st.key;
-    return head + agentRow(a, models, ctx);
+    return head + agentRow(a, models, ctx, flightFor(fm, a.address));
   }).join("");
 
   // An 8s auto-refresh rebuilds this subtree; expansion lives in state.expanded so it
   // survives, and the focused row is restored so keyboard focus does not jump to <body>.
   const focused = document.activeElement?.dataset?.agent;
-  // panes and dogs each carry a slice of this tab; say so when one is failing rather
-  // than quietly showing a town that looks asleep.
+  // panes, dogs and flight each carry a slice of this tab; say so when one is failing
+  // rather than quietly showing a town that looks asleep, or unassigned.
   $("#agents").innerHTML = errNote("status") + errNote("panes") + errNote("dogs")
-    + (agents.length ? rows : empty("No agents"));
+    + errNote("flight") + (agents.length ? rows : empty("No agents"));
   if (focused) $$("#agents [data-agent]").find((el) => el.dataset.agent === focused)?.focus();
 }
 
@@ -660,7 +951,8 @@ function renderTrail() {
 }
 
 /* ---------------- boot ---------------- */
-["#rigs", "#escalations", "#prio", "#changelog", "#work", "#agents", "#mail", "#trail"]
+["#rigs", "#escalations", "#prio", "#changelog", "#flight", "#convoys", "#work", "#agents",
+  "#mail", "#trail"]
   .forEach((s) => ($(s).innerHTML = '<div class="skeleton"></div><div class="skeleton"></div>'));
 load(true);
 schedule();

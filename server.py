@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
+import flight
 import models
 import panes
 
@@ -50,6 +51,14 @@ def agent_panes():
     return panes.by_session(_status())
 
 
+def work_in_flight():
+    """The "flight" read: every bead that is not open and not closed, and who holds
+    it. `gt ready` drops a bead the moment somebody picks it up and no `gt` read
+    carries an agent's work, so this is the console's only answer to "what is being
+    worked on right now". One `bd` call per beads repo in town — see flight.py."""
+    return flight.in_flight(_status(), TOWN)
+
+
 # name -> (source, seconds between background refreshes). A source is `gt` argv —
 # every one read-only — or a callable returning (data, error) for a read that is not
 # a `gt` call at all. Either way this table stays the one place a read is declared.
@@ -57,6 +66,10 @@ READS = {
     "status":      (["status", "--json"], 15),
     "rigs":        (["rig", "list", "--json"], 45),
     "ready":       (["ready", "--json"], 20),
+    # The other half of "ready": what has already been picked up, and by whom. Same
+    # cadence as ready on purpose — they answer two halves of one question, and a
+    # visible skew between them reads as a bug rather than as staleness.
+    "flight":      (work_in_flight, 20),
     "mail":        (["mail", "inbox", "--json"], 12),
     "escalations": (["escalate", "list", "--json"], 45),
     "trail":       (["trail", "--limit", "40", "--json"], 20),
