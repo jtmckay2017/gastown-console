@@ -20,6 +20,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 import backlog
+import beads
+import edit
 import flight
 import models
 import panes
@@ -240,7 +242,48 @@ def send_mail(body):
     return {"ok": True, "detail": (p.stdout or "sent").strip()}, 200
 
 
-WRITE_ACTIONS = {"mail": send_mail}
+def write_bead(action, body):
+    """One bead write, and the one thing a handler has to do around it: fold the answer
+    into the panel it came from. edit.py owns the write and every judgement in it — what
+    may be written, what a conflict is, what `bd` is asked; backlog.py owns the shape of
+    the cache. This is the seam, and it stays this size.
+
+    Unlike every read here, this blocks on `bd`. That is the point: an operator pressing
+    Save is owed a synchronous answer, and a write queued onto the scheduler could not
+    give one. See edit.py and the CLAUDE.md note on why the rule is about the read path."""
+    with _guard:
+        panel = _cache["backlog"]["data"]
+    # Demo is handed no repos at all rather than trusted not to use the ones it was
+    # given: with an empty list there is no path for a write to reach, whatever it does.
+    repos = [] if DEMO else beads.repos(_status(), TOWN)
+    payload, code = edit.apply(action, body, repos, panel, DEMO)
+    if code != 200:
+        return payload, code
+    # Built outside the lock and swapped in under it, and only if the scheduler has not
+    # landed a fresh read in the meantime — that read is the authority, and a patch built
+    # on the panel this write started from would put it back.
+    patched = backlog.apply_write(panel, payload["rig"], payload["bead"], payload["prose"])
+    with _guard:
+        if _cache["backlog"]["data"] is panel:
+            _cache["backlog"]["data"] = patched
+    # The patch above is a cache repair, not a second source of truth — this is what
+    # replaces it with a real read a beat later. Under --demo there is no scheduler and
+    # the patch is all there is, which is exactly what makes the demo writable.
+    mark_due("backlog")
+    return payload, code
+
+
+# The allowlist. Everything else that arrives at do_POST is a 404, and there is no shell
+# passthrough behind any of these — each one is a fixed argv assembled from validated
+# fields. Note what is NOT here: no delete, no close, no dispatch. Removing a bead and
+# putting an agent on one are separate decisions with separate beads (gc-dzd), not
+# things that arrive as part of an editor.
+WRITE_ACTIONS = {
+    "mail": send_mail,
+    "bead-new": lambda body: write_bead("new", body),
+    "bead-edit": lambda body: write_bead("edit", body),
+    "bead-link": lambda body: write_bead("link", body),
+}
 
 
 class Handler(BaseHTTPRequestHandler):

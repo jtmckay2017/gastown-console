@@ -118,6 +118,82 @@ def load_prose(table):
         _PROSE.update(table)
 
 
+def apply_write(panel, rig, patch, prose_fields):
+    """Fold a bead the console just wrote into the cached panel and the pane's prose, and
+    hand back a NEW panel dict. See edit.py for the write itself.
+
+    THIS IS A PATCH ON A CACHE, NOT A SECOND SOURCE OF TRUTH. `bd` has already answered;
+    `patch` is that answer, re-read from the store rather than echoed back from the form,
+    and every write is followed by mark_due("backlog") so the authoritative read lands a
+    beat later and overwrites all of it. It exists because that beat is a whole `bd list
+    --all` per rig: without it the board would show the old title for several seconds
+    after a save, which reads as a write that did not land — the exact impression this
+    feature is not allowed to give. Anything it does not adjust (a parent's child count
+    after a reparent, the map's layout) is left to that read rather than guessed at here.
+
+    It also has to work with no scheduler at all, because that is demo mode: the panel is
+    a fixture, `bd` is never called, and this is the only thing that makes an edit visible.
+
+    NOTHING IS MUTATED IN PLACE. A reader holds the old panel dict and serialises it
+    outside the lock (see snapshot()), so the new one is built beside it and swapped."""
+    with _PROSE_LOCK:
+        _PROSE[rig] = {**(_PROSE.get(rig) or {}), patch["id"]: dict(prose_fields or {})}
+
+    rigs = (panel or {}).get("rigs") or []
+    # A rig this panel never carried has nothing to patch; the next read picks the bead
+    # up on its own, which is the same thing this function is a shortcut for.
+    if not any(r.get("rig") == rig for r in rigs):
+        return panel
+    out = [block if block.get("rig") != rig else _patched(block, patch, prose_fields)
+           for block in rigs]
+    return {**panel, "rigs": out}
+
+
+def _patched(block, patch, prose_fields):
+    """One rig's block with one bead written into it — updated where it is already
+    carried, appended where it is new, with the counters the write can actually move
+    moved and the picture redrawn off the same list the lists below it use."""
+    beads_ = list(block.get("beads") or [])
+    at = next((i for i, b in enumerate(beads_) if b.get("id") == patch["id"]), None)
+    was = beads_[at] if at is not None else {}
+    merged = {**was, **{k: v for k, v in patch.items() if v is not None}}
+    # An epic's description rides in the panel (see _project); a leaf's does not, and
+    # adding one here would make this bead the only leaf on the board carrying prose.
+    if prose_fields is not None and (was.get("kids") or was.get("desc")):
+        merged["desc"], more = _clip(prose_fields.get("desc"))
+        # `more` is "the server clipped something on this row", and the row has two
+        # clippable fields. Re-derive it rather than leaving a stale True behind when a
+        # long description is edited down to a short one.
+        merged["more"] = (more or str(merged.get("close_reason") or "").endswith("…")) or None
+    # Same rule as _project: empty fields are dropped rather than sent as null. `False`
+    # is deliberately not in that tuple — priority 0 is P0, and `0 == False`.
+    merged = {k: v for k, v in merged.items() if v not in (None, "", [])}
+
+    counts = {k: dict(block.get(k) or {}) for k in ("status", "type")}
+    if at is None:
+        beads_.append(merged)
+        _shift(counts["status"], merged.get("status"), 1)
+        _shift(counts["type"], merged.get("issue_type"), 1)
+    else:
+        beads_[at] = merged
+        if was.get("issue_type") != merged.get("issue_type"):
+            _shift(counts["type"], was.get("issue_type"), -1)
+            _shift(counts["type"], merged.get("issue_type"), 1)
+    grew = 1 if at is None else 0
+    return {**block, "beads": beads_, "graphs": graph.build(beads_), **counts,
+            "total": block.get("total", 0) + grew, "work": block.get("work", 0) + grew,
+            "open_total": block.get("open_total", 0) + grew}
+
+
+def _shift(counter, key, by):
+    """One bucket of a distribution, up or down. A bucket that empties is dropped rather
+    than drawn as a zero-height bar with a label."""
+    key = str(key or "?")
+    counter[key] = counter.get(key, 0) + by
+    if counter[key] <= 0:
+        counter.pop(key, None)
+
+
 def _clip(text):
     """(text, was_clipped). Newlines survive — the front end pre-wraps these."""
     t = str(text or "").strip()
@@ -172,12 +248,25 @@ def _prose(bead):
     beads the board drew". A bead nobody wrote anything on is the common case and it has
     to answer "nothing written down", not "not one of the beads this rig carried", which
     is the message for a genuinely different thing and would send its reader hunting for
-    a bug in the caps."""
-    out = {}
+    a bug in the caps.
+
+    A field over PROSE_MAX is truncated, and the truncation is NAMED rather than left to
+    be inferred from a trailing ellipsis. The editor (edit.py) refuses to write a field
+    it only has part of: saving a clipped copy back would delete the rest of somebody's
+    plan, and the concurrency check would reject it anyway — the console's copy differs
+    from the store's the moment it is drawn. `clipped` is what lets the editor say which
+    field, and why, instead of either lying or refusing to save anything at all."""
+    out, clipped = {}, []
     for name, field in PROSE:
         text = str(bead.get(field) or "").strip()
-        if text:
-            out[name] = text if len(text) <= PROSE_MAX else text[:PROSE_MAX] + "…"
+        if not text:
+            continue
+        if len(text) > PROSE_MAX:
+            text = text[:PROSE_MAX] + "…"
+            clipped.append(name)
+        out[name] = text
+    if clipped:
+        out["clipped"] = clipped
     return out
 
 

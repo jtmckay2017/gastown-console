@@ -102,7 +102,10 @@
        the parent-child edges, and a card that cannot move says what is holding it. The
        pane on the right is the focused half — one card's gathered context, proposed
        plan and acceptance criteria, which is the argument behind the card rather than
-       a longer version of its title. Read-only, like everything else here. -->
+       a longer version of its title.
+       It is also the one place this console writes to a plan: the pane can draft a
+       bead, edit one, link two, and mail an agent to go and revise it. Nothing here
+       deletes, closes or dispatches anything — see edit.py. -->
   <section class="view" id="view-board">
     <div class="toolbar">
       <div class="search">
@@ -110,6 +113,10 @@
         <input id="board-q" type="search" placeholder="Filter by title, id, type or assignee…" autocomplete="off">
       </div>
       <div class="chips" id="board-chips"></div>
+      <button id="board-new" class="btn primary">
+        <svg viewBox="0 0 24 24" class="ico" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        <span class="btn-label">New bead</span>
+      </button>
     </div>
     <div class="board-layout" id="board-layout">
       <div class="board-main">
@@ -234,7 +241,7 @@
 <footer class="statusbar">
   <span id="updated" class="muted">loading…</span>
   <span class="muted sep">·</span>
-  <span class="muted">read-only except mail</span>
+  <span class="muted">read-only except mail and the Board tab's bead editor — no delete, no dispatch</span>
 </footer>
 
 <script src="/static/app.js"></script>

@@ -86,6 +86,12 @@ const state = {
   // fetched for, which is what makes a late response for a card nobody is looking at
   // any more discardable rather than confusing.
   sel: null, selData: null,
+  // The pane's open form — drafting a bead, editing one, linking two, or mailing an
+  // agent about one — or null while the pane is only being read. One at a time, because
+  // the pane is one room and two half-filled forms in it is two chances to lose
+  // somebody's writing. While it is set the pane is NOT repainted by the 8s poll: see
+  // paintPane. `paneNote` is what the last write said, shown once the form has closed.
+  form: null, paneNote: "", paneBad: false,
   // The map's last markup. The pictures are the biggest subtree on the page and they
   // scroll inside their own boxes, so they are only rewritten when they change — see
   // renderMap.
@@ -1606,6 +1612,18 @@ function paneProse(key) {
   return blocks.map(([k, v]) => beadText(k, v)).join("");
 }
 
+/** The pane's title bar, shared by the reading half and every form — one close button in
+    one place, so escaping the pane is the same gesture whatever it is showing. */
+function paneHead(eyebrow) {
+  return `<div class="pane-head">
+    <span class="pane-eyebrow muted">${esc(eyebrow)}</span>
+    <button type="button" class="btn icon-only pane-close" data-close-pane="1"
+            title="Close the pane" aria-label="Close the planning pane">
+      <svg viewBox="0 0 24 24" class="ico" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+    </button>
+  </div>`;
+}
+
 function paneHtml(m) {
   // Nothing selected is nothing drawn: a permanently docked empty panel would cost the
   // board a third of its width to say "pick something". The invitation is one line in
@@ -1613,13 +1631,7 @@ function paneHtml(m) {
   if (!state.sel) return "";
   const key = selKey();
   const b = m.byId.get(state.sel.id);
-  const head = `<div class="pane-head">
-    <span class="pane-eyebrow muted">Planning</span>
-    <button type="button" class="btn icon-only pane-close" data-close-pane="1"
-            title="Close the pane" aria-label="Close the planning pane">
-      <svg viewBox="0 0 24 24" class="ico" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
-    </button>
-  </div>`;
+  const head = paneHead("Planning");
   if (!b) {
     return head + `<div class="pane-body">${empty(
       `${state.sel.id} is not in the backlog the console last read`)}</div>`;
@@ -1636,9 +1648,19 @@ function paneHtml(m) {
   ].filter(([, v]) => v);
   return head + `
     <div class="pane-body">
+      ${state.paneNote ? `<p class="pane-saved ${state.paneBad ? "is-bad" : ""}"
+        role="${state.paneBad ? "alert" : "status"}">${esc(state.paneNote)}</p>` : ""}
       <h3 class="pane-title">${esc(b.title)}</h3>
       <div class="pane-id"><span class="mono">${esc(b.id)}</span>
         ${b.plan ? '<span class="bcard-plan">plan</span>' : ""}</div>
+      <!-- Always live, never disabled-with-a-tooltip: a control that greys out for a beat
+           and explains itself only on hover explains itself to a mouse and to nobody else
+           (gc-uu8). If the prose has not landed yet, openForm() says so in words. -->
+      <div class="pane-acts">
+        <button type="button" class="btn small" data-form="edit">Edit</button>
+        <button type="button" class="btn small" data-form="link">Link</button>
+        <button type="button" class="btn small" data-form="mail">Send to an agent</button>
+      </div>
       <dl class="agent-detail pane-fields">${fields.map(([k, v]) =>
     `<div class="detail-item"><dt>${esc(k)}</dt><dd class="wrap">${esc(v)}</dd></div>`).join("")}</dl>
       ${paneRefs(m, "Blocked by", "must land first", stuck)}
@@ -1649,11 +1671,18 @@ function paneHtml(m) {
 }
 
 /** The pane alone. Called by renderBoard and by the fetch below, so a landing response
-    repaints one panel instead of rebuilding the whole board under the reader. */
+    repaints one panel instead of rebuilding the whole board under the reader.
+
+    WHILE A FORM IS OPEN THE PANE IS NOT REBUILT. The board behind it keeps refreshing on
+    its own cadence — but replacing a half-typed plan with the server's copy every eight
+    seconds is gc-6gp's bug with somebody's writing inside it, and the writing is the
+    thing this tab now exists to produce. Forms repaint only when they have something new
+    to say (a conflict, an error, a save), through paintForm(). */
 function paintPane(m) {
   const el = $("#board-pane");
+  $("#board-layout").classList.toggle("has-pane", !!state.sel || !!state.form);
+  if (state.form) return;
   const keep = el.scrollTop;
-  $("#board-layout").classList.toggle("has-pane", !!state.sel);
   el.innerHTML = paneHtml(m || backlogModel("all"));
   el.scrollTop = keep;
 }
@@ -1661,7 +1690,13 @@ function paintPane(m) {
 /** Open a card in the pane, or close it if it is already the open one — the same toggle
     every other expandable row on this page uses. */
 function selectBead(rig, id) {
+  // An open form owns the pane until it is saved or cancelled. Swapping the bead under
+  // it would throw away whatever is typed in it, silently, on a stray click into the
+  // board — so the click is refused out loud instead.
+  if (state.form) return void formSays("Save or cancel this first — the pane is busy.");
   if (selKey() === key2(rig, id)) return void closePane();
+  state.paneNote = "";
+  state.paneBad = false;
   state.sel = { rig, id };
   state.selData = { key: key2(rig, id), loading: true };
   renderBoard();
@@ -1677,8 +1712,13 @@ function selectBead(rig, id) {
   pullBead();
 }
 function closePane() {
+  // Closing the pane with a form open closes the form and keeps the bead, rather than
+  // both at once: one press, one thing lost, and the thing lost is the one you pressed.
+  if (state.form) return void closeForm();
   state.sel = null;
   state.selData = null;
+  state.paneNote = "";
+  state.paneBad = false;
   renderBoard();
 }
 
@@ -1703,12 +1743,483 @@ async function pullBead() {
   paintPane();
 }
 
+/* ---- the writing half ----
+   The operator asked for a loop, not a form: "the agent should help me to create the
+   plan and i give feedback". Most of that loop already shipped — the board and the map
+   draw the plan, and mail wakes the agent that writes it. What was missing was the
+   operator's own hand on the bead, so these four forms close it:
+
+     New bead   a rough goal, filed where an agent can find it
+     Edit       the operator's revision of what an agent drafted
+     Link       where it sits in the plan, and what it waits on
+     Send       "go and work on this one" — the existing mail write, nothing new
+
+   THREE THINGS HERE ARE NOT NEGOTIABLE, and all three are somebody's bad day.
+
+   A FORM FREEZES THE PANE. Every panel on this page is rebuilt every eight seconds. A
+   textarea inside one of those rebuilds loses its contents, its cursor and its focus, so
+   an open form stops the repaint outright (paintPane) and repaints only when it has
+   something to say. gc-6gp was the same bug before there was any typing to lose.
+
+   ONLY WHAT WAS TOUCHED IS SENT. The request carries the fields whose value differs from
+   the baseline, and the baseline for exactly those. A form that posted all seven fields
+   would assert a baseline for four the operator never opened, and every one of those is
+   a chance to reject — or clobber — an agent's revision of a field nobody was arguing
+   about.
+
+   A REJECTED SAVE IS LOUD AND KEEPS YOUR WRITING. A 409 does not clear the form and does
+   not merge anything. It says which field moved, shows what the store has now, and
+   offers the two honest choices: take theirs, or overwrite it deliberately. Both
+   re-baseline that one field, so the next Save is a decision rather than a retry. */
+
+/* The four long fields, in the order a plan gets written, with what each is for. The
+   hint is printed rather than hung off `title=` — a tooltip is a mouse affordance, and
+   the phone is the screen this console is read on (gc-uu8). */
+const FORM_PROSE = [
+  ["desc", "Gathered context", 6,
+    "What is actually going on. The facts an agent would otherwise rediscover."],
+  ["design", "Proposed plan", 8,
+    "How to do it, and what not to do. This is the field the loop is about."],
+  ["acceptance", "Acceptance criteria", 4,
+    "How anybody can tell it is finished."],
+  ["notes", "Notes", 3, "Anything that does not belong above."],
+];
+/* bd's own vocabulary, not ours — same rule the board's columns follow. */
+const FORM_TYPES = ["task", "bug", "feature", "epic", "chore", "decision"];
+const FORM_LABEL = { title: "Title", priority: "Priority", type: "Type", parent: "Parent",
+  ...Object.fromEntries(FORM_PROSE.map(([k, label]) => [k, label])) };
+const POSTS = { new: "/api/bead-new", edit: "/api/bead-edit", link: "/api/bead-link" };
+
+/** Open one form in the pane. `fields` is what it is editing and `base` is what the
+    console had when it drew them — the two stay separate for the whole life of the form,
+    because their difference is both what gets sent and what a conflict is measured
+    against. */
+function openForm(kind) {
+  const m = backlogModel("all");
+  // Matched on rig AND id rather than through byId, which is keyed on the id alone. Two
+  // rigs with one id is unlikely and reading the wrong one is only confusing; *writing*
+  // the wrong one is somebody else's bead overwritten, so this end takes the long way.
+  const b = state.sel
+    ? m.items.find((x) => x.id === state.sel.id && x.rig === state.sel.rig) || null : null;
+  const read = state.selData && state.selData.key === selKey();
+  const prose = (read && !state.selData.error && state.selData.data) || {};
+  if (kind !== "new" && !b) return void paneSays("Pick a card first.");
+  // The editor has to be seeded from a read that landed. One that opened on a half
+  // arrived response would offer to save a blank over somebody's plan, and the save
+  // would look exactly like a deliberate deletion afterwards.
+  if (kind === "edit" && (!read || state.selData.loading)) {
+    return void paneSays("Still reading this bead — try again in a moment.");
+  }
+  if (kind === "edit" && state.selData.error) {
+    return void paneSays(`This bead could not be read (${state.selData.error}), so there `
+      + "is nothing safe to edit from.");
+  }
+
+  let fields = {};
+  if (kind === "edit") {
+    fields = { title: b.title || "", type: b.issue_type || "task",
+      priority: b.priority == null ? "2" : String(b.priority),
+      ...Object.fromEntries(FORM_PROSE.map(([k]) => [k, prose[k] || ""])) };
+  } else if (kind === "new") {
+    fields = { title: "", type: "task", priority: "2",
+      ...Object.fromEntries(FORM_PROSE.map(([k]) => [k, ""])) };
+  } else if (kind === "link") {
+    fields = { kind: "parent", target: "", parent: b.parent || "" };
+  } else {
+    fields = { to: b.assignee || "", subject: `${b.id} — ${b.title}`, message: "" };
+  }
+  state.form = {
+    kind,
+    rig: b ? b.rig : (state.boardRig !== "all" ? state.boardRig : (m.rigs[0] || {}).rig || ""),
+    id: b ? b.id : "",
+    parent: b && kind === "new" ? b.id : "",
+    fields,
+    base: { ...fields },
+    // Whichever long fields the server could only send part of. Editing one would save
+    // the part over the whole — see backlog._prose(). Named, and refused, one by one.
+    clipped: new Set(kind === "edit" ? prose.clipped || [] : []),
+    conflicts: [], err: "", msg: "", busy: false,
+  };
+  state.paneNote = "";
+  state.paneBad = false;
+  paintForm(true);
+}
+
+function closeForm() {
+  state.form = null;
+  renderBoard();
+}
+
+/** A line the *pane* says when there is no form to say it in — a refusal to open one,
+    mostly. Same slot the last write's outcome uses, for the same reason: it is the one
+    place on this tab that reports on writing. */
+function paneSays(msg) {
+  state.paneNote = msg;
+  state.paneBad = true;
+  paintPane();
+}
+
+/** A line the form says without anything having gone wrong — a stray click into the
+    board while a form is open, or a Save with nothing to save. Separate from formFails()
+    because red is a currency: spend it on writes that did not land, not on being told
+    that nothing needed one. */
+function formSays(msg) {
+  if (!state.form) return;
+  state.form.msg = msg;
+  state.form.err = "";
+  paintForm();
+}
+
+/** The form, painted. The only thing that rewrites the pane while one is open, so it is
+    also where focus is put: on open, the first thing to fill in; after a refusal, the
+    line that says why, which is what a screen reader is left on too. */
+function paintForm(fresh = false) {
+  const el = $("#board-pane");
+  $("#board-layout").classList.toggle("has-pane", true);
+  // Rewriting the pane resets its scroll, and a form is taller than the pane — so a note
+  // arriving mid-form must not throw the reader back to the top of their own writing.
+  const keep = el.scrollTop;
+  el.innerHTML = formHtml(backlogModel("all"));
+  if (fresh) {
+    el.scrollTop = 0;
+    ($("#board-pane [data-edit]") || $("#board-pane .btn"))?.focus();
+    if (getComputedStyle(el).position === "static") {
+      el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  } else {
+    el.scrollTop = keep;
+    // A refusal is given focus so that it is read out and so that the next Tab starts
+    // from it rather than from wherever the page happened to be.
+    if (state.form.err) $("#form-note")?.focus();
+  }
+}
+
+function formHtml(m) {
+  const f = state.form;
+  const head = paneHead(f.kind === "new" ? "Drafting" : f.kind === "mail" ? "Sending"
+    : f.kind === "link" ? "Linking" : "Editing");
+  const body = f.kind === "mail" ? mailForm(m, f) : f.kind === "link" ? linkForm(m, f)
+    : beadForm(m, f);
+  return head + `<div class="pane-body form-body">${body}</div>`;
+}
+
+/** One labelled control, built here rather than by its caller so that the label, the
+    hint and the field can be wired to each other in one place.
+
+    The hint is DESCRIBED, not named: it hangs off aria-describedby instead of living
+    inside the label, so a screen reader announces "Proposed plan, text area" and then
+    the sentence, rather than reading a sentence as the name of the box every time focus
+    lands in it. It is printed on the page for the same reason nothing else here is a
+    `title=` — a tooltip is a mouse affordance and this console is read on a phone.
+
+    `spec` says what to draw: options for a select, rows for a textarea, anything else
+    is a one-line input. */
+function formField(name, label, hint, spec) {
+  const attrs = `id="f-${esc(name)}" data-edit="${esc(name)}"`
+    + (hint ? ` aria-describedby="h-${esc(name)}"` : "");
+  const value = spec.value ?? "";
+  let control;
+  if (spec.options) {
+    control = `<select ${attrs}>${spec.options.map(([v, l]) => `<option value="${esc(v)}"${
+      String(v) === String(value) ? " selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
+  } else if (spec.rows) {
+    control = `<textarea ${attrs} rows="${spec.rows}">${esc(value)}</textarea>`;
+  } else {
+    control = `<input ${attrs} autocomplete="off"${spec.list ? ` list="${esc(spec.list)}"` : ""}${
+      spec.placeholder ? ` placeholder="${esc(spec.placeholder)}"` : ""} value="${esc(value)}">`;
+  }
+  return `<div class="field${spec.narrow ? " narrow" : ""}">
+    <label class="field-name" for="f-${esc(name)}">${esc(label)}</label>
+    ${hint ? `<p class="field-hint" id="h-${esc(name)}">${esc(hint)}</p>` : ""}
+    ${control}
+  </div>`;
+}
+
+const PRIORITY_OPTIONS = [["0", "P0 urgent"], ["1", "P1 high"], ["2", "P2 normal"],
+  ["3", "P3 low"], ["4", "P4 someday"]];
+
+/** Drafting a bead and editing one are the same form: the same fields, written the same
+    way, differing only in whether there is already something on the other end of them. */
+function beadForm(m, f) {
+  const isNew = f.kind === "new";
+  const rigs = m.rigs.map((r) => [r.rig, r.rig]);
+  const inRig = m.items.filter((b) => b.rig === f.rig && !isClosed(b));
+  return `
+    <h3 class="pane-title">${isNew ? "New bead" : "Editing this bead"}</h3>
+    ${isNew ? "" : `<div class="pane-id"><span class="mono">${esc(f.id)}</span></div>`}
+    ${isNew ? formField("rig", "Rig", "Which rig's beads this belongs in",
+    { options: rigs, value: f.rig }) : ""}
+    ${isNew ? formField("parent", "Under", "An epic to file it beneath — optional.",
+    { value: f.parent, list: "form-beads", placeholder: "a bead id" }) : ""}
+    ${formField("title", "Title", "One line. This is what the card says.",
+    { value: f.fields.title })}
+    <div class="field-row">
+      ${formField("type", "Type", "", { options: FORM_TYPES.map((t) => [t, t]),
+    value: f.fields.type, narrow: true })}
+      ${formField("priority", "Priority", "", { options: PRIORITY_OPTIONS,
+    value: f.fields.priority, narrow: true })}
+    </div>
+    ${FORM_PROSE.map(([k, label, rows, hint]) => (f.clipped.has(k)
+    ? `<div class="field"><span class="field-name">${esc(label)}</span>
+         <p class="form-clipped">This field is longer than the console carries, so it
+         only has part of it — saving would delete the rest. Edit it with
+         <code class="mono">bd update ${esc(f.id)}</code>.</p></div>`
+    : formField(k, label, hint, { rows, value: f.fields[k] }))).join("")}
+    ${isNew ? beadList(inRig) : ""}
+    ${clashHtml(f)}
+    ${formFoot(f, isNew ? "Create bead" : "Save")}`;
+}
+
+/** Two beads, joined. Parent is single-valued so a change to it is an overwrite and
+    carries a baseline; a blocks edge is only ever added, so it does not — see edit.py. */
+function linkForm(m, f) {
+  const b = m.byId.get(f.id) || {};
+  const others = m.items.filter((x) => x.rig === f.rig && x.id !== f.id);
+  const parent = m.byId.get(f.fields.parent);
+  return `
+    <h3 class="pane-title">Link this bead</h3>
+    <div class="pane-id"><span class="mono">${esc(f.id)}</span> ${esc(b.title || "")}</div>
+    ${formField("kind", "How", "", { value: f.fields.kind, options: [
+    ["parent", "goes under — as a child of"],
+    ["blocks", "waits on — blocked by"]] })}
+    ${formField("target", "The other bead",
+    "One of this rig's beads. Type an id, or pick from the list.",
+    { value: f.fields.target, list: "form-beads", placeholder: "a bead id" })}
+    ${beadList(others)}
+    ${f.fields.parent ? `<p class="form-hint">Currently under
+      <span class="mono">${esc(f.fields.parent)}</span>${
+  parent ? ` — ${esc(parent.title)}` : ""}. Choosing a new one replaces it.</p>` : ""}
+    ${clashHtml(f)}
+    ${formFoot(f, "Link")}`;
+}
+
+/** The other half of the loop, and not a new write: this is the same allowlisted
+    `POST /api/mail` the Mail tab uses, prefilled with the bead so the agent it wakes
+    knows which plan it is being asked about. */
+function mailForm(m, f) {
+  const b = m.byId.get(f.id) || {};
+  return `
+    <h3 class="pane-title">Send an agent to this bead</h3>
+    <div class="pane-id"><span class="mono">${esc(f.id)}</span> ${esc(b.title || "")}</div>
+    <p class="form-hint">Mail wakes the agent it is addressed to. Say what you want
+      drafted or changed; the bead id travels with it, so it can write the plan onto the
+      bead and you will see it here on the next read.</p>
+    ${formField("to", "To", "An agent's address.",
+    { value: f.fields.to, list: "agent-addresses", placeholder: "rig/polecats/name" })}
+    ${formField("subject", "Subject", "", { value: f.fields.subject })}
+    ${formField("message", "Message", "The goal, or the feedback.",
+    { rows: 8, value: f.fields.message })}
+    ${formFoot(f, "Send")}`;
+}
+
+/** The id picker behind both `parent` and `target`. A datalist rather than a select: a
+    rig has hundreds of beads, and typing three characters of an id beats scrolling. */
+function beadList(rows) {
+  return `<datalist id="form-beads">${byKey(rows, (b) => b.id).slice(0, 400)
+    .map((b) => `<option value="${esc(b.id)}">${esc(b.title)}</option>`).join("")}</datalist>`;
+}
+
+/** What the store has that the console did not. Shown in full, with the two choices that
+    are actually available — never merged, and never resolved by guessing. */
+function clashHtml(f) {
+  if (!f.conflicts.length) return "";
+  return `<div class="form-clash">
+    <h4>${f.conflicts.length === 1 ? "One field" : `${f.conflicts.length} fields`}
+      changed while you were writing</h4>
+    <p>Nothing was saved. Read what the store has now, then either take it or write over
+      it on purpose.</p>
+    ${f.conflicts.map((c, i) => `
+      <div class="clash">
+        <div class="clash-head">
+          <span class="clash-field">${esc(FORM_LABEL[c.field] || c.field)}</span>
+          <button type="button" class="btn small" data-clash="theirs" data-clash-i="${i}">Take this one</button>
+          <button type="button" class="btn small" data-clash="mine" data-clash-i="${i}">Keep mine</button>
+        </div>
+        <div class="clash-text">${esc(c.now || "(empty)")}</div>
+      </div>`).join("")}
+  </div>`;
+}
+
+/** The foot every form shares: what happened, then the way out and the way on. The note
+    is focusable so a refusal can be given focus, and it is a live region so one that
+    arrives while focus is elsewhere is still announced. */
+function formFoot(f, label) {
+  return `<div class="form-foot">
+    <p id="form-note" tabindex="-1" class="form-note ${f.err ? "is-bad" : ""}"
+       role="${f.err ? "alert" : "status"}" aria-live="polite">${esc(f.err || f.msg)}</p>
+    <div class="form-actions">
+      <button type="button" class="btn" data-form-cancel="1">Cancel</button>
+      <button type="button" class="btn primary" data-form-save="1"${f.busy ? " disabled" : ""}>${
+  esc(f.busy ? "Saving…" : label)}</button>
+    </div>
+  </div>`;
+}
+
+/* ---- sending it ---- */
+
+/** What differs from the baseline, and nothing else. See the note at the top of this
+    section: a field nobody touched is a field this console has no business asserting. */
+function touched(f) {
+  return Object.fromEntries(Object.entries(f.fields)
+    .filter(([k, v]) => !f.clipped.has(k) && v !== (f.base[k] ?? "")));
+}
+
+async function submitForm() {
+  const f = state.form;
+  if (!f || f.busy) return;
+  if (f.kind === "mail") return void sendFromPane(f);
+
+  let body;
+  if (f.kind === "new") {
+    if (!f.fields.title.trim()) return void formFails("A new bead needs a title.");
+    body = { rig: f.rig, parent: f.parent.trim(),
+      fields: Object.fromEntries(Object.entries(f.fields).filter(([, v]) => v.trim())) };
+    body.fields.title = f.fields.title;
+  } else if (f.kind === "link") {
+    if (!f.fields.target.trim()) return void formFails("Name the other bead.");
+    body = { rig: f.rig, id: f.id, kind: f.fields.kind, target: f.fields.target.trim(),
+      base: { parent: f.base.parent } };
+  } else {
+    const fields = touched(f);
+    if (!Object.keys(fields).length) return void formSays("Nothing has changed — nothing to save.");
+    if (!f.fields.title.trim()) return void formFails("A bead has to keep a title.");
+    body = { rig: f.rig, id: f.id, fields,
+      base: Object.fromEntries(Object.keys(fields).map((k) => [k, f.base[k] ?? ""])) };
+  }
+  await postWrite(POSTS[f.kind], body, f);
+}
+
+/** One write, and everything that follows from it landing. The response is what the
+    store now holds rather than what the form said, so the pane and the next baseline are
+    both the truth — which is what keeps a second edit from colliding with the first. */
+async function postWrite(path, body, f) {
+  f.busy = true;
+  f.err = "";
+  f.msg = "Saving…";
+  paintForm();
+  let j = null;
+  try {
+    const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body) });
+    j = await r.json();
+  } catch (e) {
+    f.busy = false;
+    return void formFails(`The console could not reach the server — ${e.message}. Nothing was saved.`);
+  }
+  f.busy = false;
+  if (!j || !j.ok) {
+    f.conflicts = (j && j.conflicts) || [];
+    return void formFails((j && j.error) || "The write failed and said nothing about why.");
+  }
+  // Landed. Take the store's answer as the new truth for the pane, close the form, and
+  // ask for a fresh backlog — the server has already patched its cached copy so the card
+  // moves now, and the real read overwrites that a beat later.
+  state.sel = { rig: j.rig, id: j.id };
+  state.selData = { key: key2(j.rig, j.id), data: j.prose || {} };
+  state.paneNote = j.detail || "Saved.";
+  state.paneBad = false;
+  state.form = null;
+  renderBoard();
+  load(true);
+  setTimeout(() => load(false), 2500);
+}
+
+/** One conflicted field, decided. Either way the baseline moves to what the store has,
+    because that is now what this console knows about it — the difference between the two
+    is only whose text is left in the box. Nothing is written until Save is pressed
+    again, so "keep mine" is a decision the operator makes twice. */
+function resolveClash(choice, i) {
+  const f = state.form;
+  const c = f && f.conflicts[i];
+  if (!c) return;
+  const label = FORM_LABEL[c.field] || c.field;
+  f.base[c.field] = c.now;
+  if (choice === "theirs") f.fields[c.field] = c.now;
+  f.conflicts = f.conflicts.filter((_, n) => n !== i);
+  f.msg = choice === "theirs"
+    ? `${label} is now what the store has. Edit it if you wanted something else.`
+    : `${label} will overwrite what the store has when you save.`;
+  f.err = "";
+  paintForm();
+  $("#board-pane [data-clash]")?.focus();
+}
+
+function formFails(reason) {
+  const f = state.form;
+  if (!f) return;
+  f.err = reason;
+  f.msg = "";
+  paintForm();
+}
+
+/** The pane's Send. Deliberately the Mail tab's endpoint and nothing else — waking an
+    agent is already an allowlisted write, and this is a second door onto it rather than
+    a second write. The bead travels in the body so the agent knows which plan it is
+    being asked about. */
+async function sendFromPane(f) {
+  const to = f.fields.to.trim(), subject = f.fields.subject.trim();
+  const message = f.fields.message.trim();
+  if (!to || !subject || !message) return void formFails("To, subject and message are all required.");
+  f.busy = true; f.err = ""; f.msg = "Sending…";
+  paintForm();
+  try {
+    const r = await fetch("/api/mail", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to, subject, type: "task", priority: 2,
+        message: `${message}\n\n— from the Gas Town console, about ${f.rig} ${f.id}` }) });
+    const j = await r.json();
+    f.busy = false;
+    if (!j.ok) return void formFails(j.error || "The send failed and said nothing about why.");
+    state.paneNote = `Sent to ${to}. It will wake and read ${f.id}.`;
+  state.paneBad = false;
+    state.form = null;
+    renderBoard();
+    load(true);
+  } catch (e) {
+    f.busy = false;
+    formFails(`The console could not reach the server — ${e.message}. Nothing was sent.`);
+  }
+}
+
+/* ---- wiring ---- */
+
+// Typed values live in state, not in the DOM: a form that repaints (a conflict, a
+// failure) has to come back with what was typed still in it.
+$("#view-board").addEventListener("input", (ev) => {
+  const el = ev.target.closest("[data-edit]");
+  if (!el || !state.form) return;
+  const name = el.dataset.edit;
+  if (name === "rig") {
+    // The rig decides which beads the parent picker can offer, so this one redraws.
+    state.form.rig = el.value;
+    state.form.parent = "";
+    return void paintForm();
+  }
+  if (name === "parent" && state.form.kind === "new") state.form.parent = el.value;
+  else state.form.fields[name] = el.value;
+});
+
+$("#board-new").onclick = () => {
+  if (state.form) return void formSays("Save or cancel this first — the pane is busy.");
+  state.sel = null;
+  state.selData = null;
+  openForm("new");
+};
+
 $("#board-q").oninput = (e) => { state.boardq = e.target.value.toLowerCase(); renderBoard(); };
 
 // One delegated listener over the whole tab: the board and the pane are both replaced
 // wholesale on every render, and the pane's own links are cards by another name.
 $("#view-board").addEventListener("click", (ev) => {
   if (ev.target.closest("[data-close-pane]")) return void closePane();
+  // The form's own controls come first: they live inside the pane, which lives inside
+  // this tab, and one of them (a pane link) is a card by another name.
+  const open = ev.target.closest("[data-form]");
+  if (open) return void openForm(open.dataset.form);
+  if (ev.target.closest("[data-form-cancel]")) return void closeForm();
+  if (ev.target.closest("[data-form-save]")) return void submitForm();
+  const clash = ev.target.closest("[data-clash]");
+  if (clash) return void resolveClash(clash.dataset.clash, Number(clash.dataset.clashI));
   const card = ev.target.closest("[data-card]");
   if (card) return void selectBead(card.dataset.rig, card.dataset.card);
   const more = ev.target.closest("[data-more]");

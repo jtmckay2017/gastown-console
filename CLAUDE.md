@@ -16,9 +16,11 @@ twenty lines by hand instead.
 Runtime floor is Python 3.9 and a modern browser. `static/app.js` is one plain `<script src>`,
 not a module; `static/app.css` is hand-written CSS with custom properties.
 
-## Hard constraint 2: never shell out on the HTTP request path
+## Hard constraint 2: never shell out on a *read* path
 
-`gt status` takes seconds, and concurrent `gt` calls contend on the Dolt server. So:
+`gt status` takes seconds, and concurrent `gt` calls contend on the Dolt server. Every read
+here is polled every eight seconds by every open tab, so a slow one is not slow once — it is
+slow forever, on everyone's page at the same time. So:
 
 - A background scheduler thread (`scheduler()` in `server.py`) refreshes each panel on its own
   cadence into `_cache`. Cadences live in the `READS` table — that table is the single place a
@@ -51,22 +53,31 @@ not a module; `static/app.css` is hand-written CSS with custom properties.
   the oldest.
 - `POOL` is a 3-worker `ThreadPoolExecutor` on purpose. Raising it increases Dolt contention.
 
-Any change that makes a handler block on a subprocess is wrong, no matter how fast it looks on
-a quiet town. Measure on a busy town, not yours. The rule is about slow work, not subprocesses
-specifically — `models.py` reads the filesystem rather than shelling out, `panes.py` shells out
-to `tmux` rather than to `gt`, and `flight.py` shells out to `bd`; all three live behind the
-same scheduler for the same reason. `panes` costs one `capture-pane` per session in town and
-`flight` one `bd list` per beads repo, which is milliseconds each and still has no business on
-a request path. `watch` costs one `capture-pane` for each session under lease — never more
-than `panes.MAX_WATCHED`, and none at all when nobody is watching, which is nearly always.
-`backlog` is the heaviest of the lot — a whole `bd list --all` per beads repo — which is why
-it runs on the slowest cadence in the table and trims hard before it caches.
+Any change that makes a **read** handler block on a subprocess is wrong, no matter how fast it
+looks on a quiet town. Measure on a busy town, not yours. The rule is about slow work, not
+subprocesses specifically — `models.py` reads the filesystem rather than shelling out,
+`panes.py` shells out to `tmux` rather than to `gt`, and `flight.py` shells out to `bd`; all
+three live behind the same scheduler for the same reason. `panes` costs one `capture-pane` per
+session in town and `flight` one `bd list` per beads repo, which is milliseconds each and still
+has no business on a request path. `watch` costs one `capture-pane` for each session under
+lease — never more than `panes.MAX_WATCHED`, and none at all when nobody is watching, which is
+nearly always. `backlog` is the heaviest of the lot — a whole `bd list --all` per beads repo —
+which is why it runs on the slowest cadence in the table and trims hard before it caches.
 
-There are now **no exceptions**: `refresh()` is called only from the scheduler pool, and it
-returns immediately under `--demo` so no read path can shell out — or touch a real transcript,
-or a real tmux socket, or a real beads repo — with fixtures loaded. Every place that spawns a
-subprocess (`refresh()`, `send_mail()`, and `panes.py`/`beads.py` beneath `refresh()`) is
-demo-guarded. Keep it that way.
+`refresh()` is called only from the scheduler pool, and it returns immediately under `--demo`
+so no read path can shell out — or touch a real transcript, or a real tmux socket, or a real
+beads repo — with fixtures loaded.
+
+**Writes are the other shape and they are allowed to block.** `POST /api/mail` and the three
+bead writes (`edit.py`) call `gt`/`bd` on the request thread on purpose. A write happens when
+somebody presses a button, it is one call rather than a poll, and it has to be synchronous:
+the operator is owed an answer about whether their edit landed, and a write queued onto the
+scheduler could not give one — it would be exactly the fire-and-forget the feature exists to
+rule out. That is a licence for a POST and for nothing else. If you find yourself wanting a
+GET to shell out, you want a scheduler entry.
+
+Every place that spawns a subprocess (`refresh()`, `send_mail()`, `edit.py`, and
+`panes.py`/`beads.py` beneath them) is demo-guarded. Keep it that way.
 
 ## Hard constraint 3: nothing is reachable by mouse only
 
@@ -107,28 +118,71 @@ above it: check a change against every line here before you claim it is done.
   figures are `role="group"` now that the nodes inside them are controls. Decorative glyphs
   are `aria-hidden`.
 
-## Bead reads run in the rig's directory — always
+## Every `bd` call runs in the rig's directory — always
 
 Every rig keeps its **own** Dolt database, and `bd` chooses one from the directory it runs in.
 `bd list` run from the town root therefore returns an **empty list** for a rig's beads, with no
 error and no warning — which is indistinguishable from an empty backlog and has already cost
-this town once (hq-rin). So all three bead reads go through `beads.py`, which passes `-C repo`
+this town once (hq-rin). So every `bd` call goes through `beads.py`, which passes `-C repo`
 *and* `cwd=repo` and owns the only definition of where a rig's beads live. Do not assemble a
 `bd` argv anywhere else, and treat a repo that answers with nothing as suspicious rather than
 as empty — `backlog.py` reports it as an error instead of drawing a rig that planned nothing.
 
+The writes make this sharper, not looser. A read against the wrong database answers "nothing";
+a *write* against the wrong database puts somebody's bead in it. So `edit.py` resolves the repo
+from `beads.repos()` by exact rig label and refuses a rig that does not resolve, rather than
+falling back to the nearest database — and `beads.write()` is the same one door with the same
+two flags on it.
+
 ## Security posture
 
-Read-only **except one allowlisted write**: `POST /api/mail` → `gt mail send`. The allowlist is
-`WRITE_ACTIONS`; `do_POST` refuses anything not in it. There is no shell passthrough and no
-command palette. That is a deliberate design, not an unfinished feature.
+Read-mostly, with a **four-entry write allowlist** — `WRITE_ACTIONS`; `do_POST` refuses
+anything not in it. There is no shell passthrough and no command palette. That is a deliberate
+design, not an unfinished feature.
 
-The Board tab's `GET /api/bead` does not change that. It takes two strings and uses them as
-dict keys into data the scheduler already read — it opens no file, spawns no process, and can
-only answer for a bead the backlog read carried, so there is nothing for a crafted `rig` or
-`id` to reach. The Board tab itself is read-only for the same reason the rest is: the operator's
-design had an "Approve plan" button on it, and that is a write, filed separately (gc-dzd) so a
-human signs off on it rather than it arriving as part of a viewer.
+| Action | Runs | Owned by |
+|---|---|---|
+| `mail` | `gt mail send` | `send_mail()` in `server.py` |
+| `bead-new` | `bd create` in the rig's own repo | `edit.py` |
+| `bead-edit` | `bd update` — title, type, priority, description, design, acceptance, notes | `edit.py` |
+| `bead-link` | `bd dep add`, or `bd update --parent` | `edit.py` |
+
+**What is deliberately absent is as much of the design as what is there.** There is no delete,
+no close, no status change and no unlink. A planning surface that can destroy a bead is a
+different risk class; closing one is a claim about work that the console cannot verify; and
+putting an agent on one is a human signing something off, which is gc-dzd's whole subject and
+not a thing that arrives as part of an editor. `bd`'s vocabulary is much larger than this table
+and the gap is the point — adding a row to it is a design decision that needs a human, exactly
+like a new endpoint is.
+
+Three properties hold for every bead write, and a change that breaks any of them is wrong:
+
+- **It can only touch a bead the console has already drawn.** `edit.apply()` checks the rig
+  against the backlog panel and the id against that rig's carried beads before anything else,
+  so a crafted `rig`, `id` or `target` has nothing to reach. The repo comes from `beads.repos()`
+  by exact label — never from the request — and under `--demo` the repo list handed in is empty,
+  so a demo write has no path to a database even in principle.
+- **It cannot silently overwrite an agent.** Every edit carries what the console had for each
+  field it writes; `edit.py` re-reads the bead from the store and refuses the whole write if
+  any of them moved, naming the field and showing both versions. It is per field rather than per
+  bead because an agent claiming a bead changes its status every few minutes, and a check that
+  cried wolf over that would train people to click through it. Read the header of `edit.py`
+  before touching this: divergent copies of one fact is this town's most expensive failure class
+  (hq-m2p, hq-r1e), and last-write-wins is how you get them.
+- **It cannot fail quietly.** Every path returns `ok:true` with what the store now holds, or
+  `ok:false` with a reason. The response is a re-read, never an echo of the form, so "saved"
+  means the database agrees. The front end never clears a form on a failure and never
+  auto-dismisses the message.
+
+Two things follow for the front end, both already true and both easy to undo by accident: an
+open form **freezes the pane** against the 8s repaint (`paintPane`), because rebuilding a
+`<textarea>` under somebody discards what they typed; and a save posts **only the fields whose
+value differs from the baseline**, because asserting a baseline for a field nobody opened is a
+chance to reject — or clobber — an edit that was never in dispute.
+
+The Board tab's `GET /api/bead` predates all of this and is still just a read. It takes two
+strings and uses them as dict keys into data the scheduler already read — it opens no file,
+spawns no process, and can only answer for a bead the backlog read carried.
 
 Why this matters more than it looks: **sending mail nudges the recipient agent awake, and Gas
 Town agents typically run with permission checks disabled.** The compose box is "start an
@@ -169,13 +223,14 @@ Other things not to erode:
 
 | Path | What it is |
 |---|---|
-| `server.py` | HTTP handlers + the refresh scheduler + `READS`/`WRITE_ACTIONS`. ~380 lines and it should not grow much: handlers, the scheduler, the two tables, nothing else. Anything a handler needs to *know* belongs in the module that owns the read. |
+| `server.py` | HTTP handlers + the refresh scheduler + `READS`/`WRITE_ACTIONS`. ~420 lines and it should not grow much: handlers, the scheduler, the two tables, nothing else. Anything a handler needs to *know* belongs in the module that owns the read — or, for a write, the one that owns the write. `write_bead()` is the shape to copy: resolve, delegate, fold the answer into the cache, mark due. |
 | `demo.py` | Synthetic fixtures for `--demo`. |
 | `models.py` | The `models` read: which model each agent runs, from its Claude Code transcript. |
 | `panes.py` | Two reads off the same tmux screens. `panes`: what each agent is *doing*, one summary line per session — `gt`'s `state` field means "has a bead on its hook", not "is working", so this is the console's only source of activity. `watch`: one agent's *whole* screen, for the live terminal view, and only while somebody has that view open. |
-| `beads.py` | The one way to run `bd`. Owns repo discovery and the invocation, because a bead read against the wrong directory answers "nothing" instead of failing — see the section above. |
+| `beads.py` | The one way to run `bd` — reads (`run_bd`, `show`) and writes (`write`) alike. Owns repo discovery and the invocation, because a `bd` call against the wrong directory answers "nothing" instead of failing — see the section above. |
+| `edit.py` | The bead writes: create, edit, link. Owns what may be written, what a conflict is, and the re-read that makes "saved" mean the store agrees. The only module here that is allowed to be slow on a request path, and the header says why. |
 | `flight.py` | The `flight` read: every bead that is neither open nor closed, and who holds it. `gt ready` drops a bead the moment it is picked up and no `gt` read carries an agent's work, so this is the only answer to "what is being worked on". One `bd list` per beads repo in town. |
-| `backlog.py` | The `backlog` read: each rig's whole backlog with its structure intact — the epic hierarchy, the `blocks` edges, and why every closed bead closed. The Work tab's reads are all about this minute; this is the one a ceremony reads. Slowest cadence, biggest payload, trimmed hardest. Also owns the prose table behind `GET /api/bead` — the four long fields, kept beside the panel rather than in it. |
+| `backlog.py` | The `backlog` read: each rig's whole backlog with its structure intact — the epic hierarchy, the `blocks` edges, and why every closed bead closed. The Work tab's reads are all about this minute; this is the one a ceremony reads. Slowest cadence, biggest payload, trimmed hardest. Also owns the prose table behind `GET /api/bead` — the four long fields, kept beside the panel rather than in it — and `apply_write()`, which folds a bead the console just wrote into that cache so a save is visible before the next read lands. |
 | `graph.py` | The same beads, drawn: epic trees and the `blocks` graph as SVG, laid out in stdlib Python. Not a read — it takes what `backlog.py` has already trimmed and rides inside that panel, so the picture and the lists beside it can never be a cadence apart. The one place markup is generated on the server, which is why it does its own escaping. Its nodes are controls rather than boxes — focusable, named, and read out in full by `app.js` — because every title in here is clipped to a pixel budget. |
 | `static/index.html` | The whole page skeleton; every panel is an empty `<div id=…>`. |
 | `static/app.js` | Fetch, state, and all rendering. Vanilla JS, no framework. |
@@ -186,7 +241,15 @@ Other things not to erode:
 
 There is no test suite. **`python3 server.py --demo` is how you verify a change** without a
 live town — it seeds `_cache` from `demo.fixtures()`, never starts the scheduler, and never
-runs `gt`. `POST /api/mail` returns 400 in demo rather than sending.
+runs `gt`. `POST /api/mail` returns 400 in demo rather than sending, which doubles as the
+demo's one worked example of a write failing loudly.
+
+**The bead writes work in demo, against the fixtures.** They run the same validation, produce
+the same payloads and the same conflict shape, and skip only the `bd` call — `backlog.apply_write()`
+patches the cached panel instead, which is what the live path uses anyway to stop the board
+sitting on a stale title while the next read runs. So creating a bead, editing one and linking
+two are all verifiable with no town attached, and the demo is where you check that a change to
+`edit.py` still refuses what it should. Live is still where you check that `bd` agrees.
 
 Demo mode must keep working. It is the project's 10-second first impression and the only
 verification path a contributor without a town has.

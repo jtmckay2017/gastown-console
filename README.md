@@ -37,7 +37,7 @@ town at `~/gt` (override with `--town`).
 |---|---|
 | **Overview** | Agents up, rigs, ready work, active hooks, escalations, unread mail · rig health · priority histogram · recently closed |
 | **Work** | What is in flight and who holds it, convoy progress, and every ready issue, with live search and source/priority filters |
-| **Board** | The same beads as a kanban — columns are beads' own statuses (blocked always among them), swimlanes are the epic hierarchy, and clicking a card opens its gathered context, proposed plan and acceptance criteria beside the board |
+| **Board** | The same beads as a kanban — columns are beads' own statuses (blocked always among them), swimlanes are the epic hierarchy, and clicking a card opens its gathered context, proposed plan and acceptance criteria beside the board. The one place the console writes: draft a bead, revise the plan on one, link two, or mail an agent to go and redraft it |
 | **Backlog** | Each rig's whole plan with its structure intact: epic trees and dependency chains drawn as SVG, what is blocked and behind what, and why every closed bead closed |
 | **Agents** | Every agent in town — including the deacon's dogs and anything else holding a session — grouped by what it is actually doing, read from its screen: working, input staged, assigned, idle, done, parked, not started, stopped |
 | **Mail** | Inbox, plus compose with address autocomplete and voice dictation |
@@ -66,8 +66,24 @@ with an answer still sitting unsent in the input box — without somebody having
 
 ## Security
 
-The console is **read-only except for one allowlisted write**: `POST /api/mail`, which maps to
-`gt mail send`. There is no shell passthrough and no command palette.
+The console is **read-only except for an allowlist of four writes**, and there is no shell
+passthrough and no command palette:
+
+| Write | What it runs |
+|---|---|
+| `POST /api/mail` | `gt mail send` |
+| `POST /api/bead-new` | `bd create` in the rig's own beads repo |
+| `POST /api/bead-edit` | `bd update` — title, type, priority, and the four long fields |
+| `POST /api/bead-link` | `bd dep add`, or `bd update --parent` |
+
+**Nothing deletes and nothing dispatches.** There is no close, no delete, no unlink and no
+"put an agent on this" — putting work on an agent's hook is a decision that needs a human
+signing it, and it is filed separately.
+
+Every edit is optimistic: the request carries what the console had, the server re-reads the
+bead, and a field somebody else moved in the meantime is **rejected and shown**, never merged
+and never overwritten. Agents rewrite these beads continuously, so a last-write-wins Save
+would quietly drop their work.
 
 Sending mail nudges the recipient agent awake, and Gas Town agents typically run with
 permission checks disabled — so treat the compose box as "start an autonomous agent", not

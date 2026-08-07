@@ -1,4 +1,4 @@
-"""Reading beads, and the one rule every bead read has to obey.
+"""Running `bd`, and the one rule every call to it has to obey.
 
 Rig beads do not live in one database. Every rig keeps its own, and `bd` picks the
 database from the directory it runs in — so `bd list` run from the town root sees
@@ -8,16 +8,21 @@ backlog, and this town has already paid for that confusion once: hq-rin, where t
 Deacon classified the town idle while a polecat was mid-task, because it ran `bd
 list` from the wrong directory.
 
-So there is one way in and it takes the repo first. `run_bd()` passes `-C repo` *and*
+So there is one way in and it takes the repo first. `_bd()` passes `-C repo` *and*
 runs with `cwd=repo` — belt and braces, because the failure mode is silent — and
 `repos()` is the only place that decides where a rig's beads live. No caller builds a
 `bd` argv of its own, which is what keeps the directory from being something a caller
 can forget. Callers should also treat a repo that answers with nothing as suspicious
 rather than as empty; backlog.py says so out loud.
 
-Both readers above this — flight.py and backlog.py — run only on the scheduler. `bd`
-is heavier than `gt status` and neither has any business on a request path; see
-CLAUDE.md, and note that `refresh()` returns before either of them under --demo.
+WHAT RUNS WHERE. The two readers above this — flight.py and backlog.py — run only on
+the scheduler, because `bd` is heavier than `gt status` and neither has any business on
+a request path; see CLAUDE.md, and note that `refresh()` returns before either of them
+under --demo. `show()` and `write()` are the exception the same document names: they are
+the bead-editing write path (edit.py), which is user-initiated and synchronous by
+definition — an operator pressing Save has to be told whether it landed, and a write
+queued onto a cache would be exactly the fire-and-forget the feature exists to avoid.
+They are still `bd`, so they are still slow, and nothing but a POST may call them.
 """
 
 import json
@@ -26,15 +31,24 @@ import shutil
 import subprocess
 
 PATH = "/opt/homebrew/bin:/usr/local/bin:" + os.environ.get("PATH", "")
+# Every write says the console did it rather than inheriting the shell user's git
+# identity. Agents write these beads too, so "who last touched this" is a question with
+# a real answer, and a console edit that signed itself as a person would erase it.
+ACTOR = "gastown-console"
 
 
-def run_bd(repo, args, timeout=20):
-    """One `bd` list-shaped read against one beads repo, as (rows, error). The repo is
+def _bd(repo, args, timeout, strict=False):
+    """One `bd` invocation against one beads repo, as (parsed json, error). The repo is
     the first argument because it is the argument that must never be omitted. Never
-    raises: a rig whose beads cannot be read is one rig's problem, not the panel's."""
+    raises: a rig whose beads cannot be read is one rig's problem, not the panel's.
+
+    `strict` also fails on a non-zero exit that printed a usable body. Reads do not want
+    that — a list that parsed is a list, whatever bd thought of the run — but a write
+    does: "it wrote something and also exited 1" is the one answer a Save button must
+    never round down to success."""
     exe = shutil.which("bd", path=PATH) or "bd"
     try:
-        p = subprocess.run([exe, "-C", repo, *args, "--json", "--no-pager"],
+        p = subprocess.run([exe, "-C", repo, *args, "--json"],
                            capture_output=True, text=True, timeout=timeout,
                            cwd=repo, env=dict(os.environ, PATH=PATH))
     except subprocess.TimeoutExpired:
@@ -49,12 +63,60 @@ def run_bd(repo, args, timeout=20):
     lines = (p.stdout or "").splitlines()
     start = next((i for i, l in enumerate(lines) if l.lstrip()[:1] in ("[", "{")), None)
     if start is None:
-        return None, ((p.stderr or "").strip().splitlines() or ["no output"])[0]
+        return None, _why(p)
     try:
         parsed = json.loads("\n".join(lines[start:]))
     except json.JSONDecodeError:
         return None, "unparseable output"
+    # A failing bd still answers in JSON, with the reason inside it. Reading the body and
+    # ignoring the exit status would turn "no issue found" into an empty success.
+    if isinstance(parsed, dict) and parsed.get("error"):
+        return None, str(parsed["error"])
+    if strict and p.returncode:
+        return None, _why(p)
+    return parsed, None
+
+
+def _why(p):
+    """The first line of a failure that actually says something. bd puts its reason on
+    stderr and its usage block underneath, so take a line rather than the lot."""
+    for stream in (p.stderr, p.stdout):
+        for line in (stream or "").splitlines():
+            line = line.strip()
+            if line and not line.startswith(("warning:", "Usage:", "Fix:", "Or:")):
+                return line
+    return f"bd exited {p.returncode}" if p.returncode else "no output"
+
+
+def run_bd(repo, args, timeout=20):
+    """One `bd` list-shaped read, as (rows, error). Scheduler only — see the note above."""
+    parsed, err = _bd(repo, [*args, "--no-pager"], timeout)
+    if err:
+        return None, err
     return (parsed if isinstance(parsed, list) else []), None
+
+
+def show(repo, ident, timeout=20):
+    """One whole bead, as (bead, error) — every field `bd` stores, not the trimmed
+    projection the panel carries. This is what the write path compares against before it
+    overwrites anything, so it must be a live read and not a cached one: a freshness
+    check run against a cache is a freshness check that cannot fail."""
+    parsed, err = _bd(repo, ["show", ident], timeout, strict=True)
+    if err:
+        return None, err
+    rows = parsed if isinstance(parsed, list) else [parsed]
+    row = next((r for r in rows if isinstance(r, dict) and r.get("id")), None)
+    if row is None:
+        return None, f"{ident} is not a bead in this rig"
+    return row, None
+
+
+def write(repo, args, timeout=60):
+    """One `bd` write, as (parsed, error). Longer default timeout than a read: a write
+    takes a Dolt commit, and a write that times out half-done is worse than one that
+    waits. Callers re-read with show() afterwards rather than trusting what comes back —
+    bd's write output is not the same shape from one subcommand to the next."""
+    return _bd(repo, [*args, "--actor", ACTOR], timeout, strict=True)
 
 
 def repos(status, town):
