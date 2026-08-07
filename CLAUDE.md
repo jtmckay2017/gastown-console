@@ -92,16 +92,22 @@ above it: check a change against every line here before you claim it is done.
 - **Truncation requires a recovery path**, and a native tooltip is not one. If text is
   clipped, there is a discoverable, non-hover way to read all of it. Three shapes of that
   answer are already here, so copy one rather than inventing a fourth: a row that clips and
-  expands (`beadRow()` in `app.js`, the whole prose under the fold); a card that clips and
-  opens a pane (`.bcard-title` → `paneHtml()`); a diagram node that clips and reads out
-  (`graph.py` `_node()` → `paintRead()` in `app.js`). Where something still clips, the CSS
-  rule says which of those is its recovery path — keep that comment true.
+  expands (`expandRow()` in `app.js` — or `beadRow()`, which predates it, with the whole
+  prose under the fold); a card that clips and opens a pane (`.bcard-title` →
+  `paneHtml()`); a diagram node that clips and reads out (`graph.py` `_node()` →
+  `paintRead()` in `app.js`). Where something still clips, the CSS rule says which of
+  those is its recovery path — keep that comment true. A `.prose-box` is the far side of
+  the first shape: it scrolls rather than clips, and carries `tabindex="0"` so that
+  scroll belongs to the keyboard too, not only to a wheel.
 - **Keyboard reachable, and visibly so.** Every interactive element is focusable and
   operable without a mouse, with a focus indicator. `:focus-visible` in `app.css` is the
   floor for anything nobody styled. Expanders carry `aria-expanded` and `aria-controls`, and
-  focus survives the 8s refresh that rebuilds the markup under it — `renderBacklog()` and
-  `renderBoard()` both restore `document.activeElement`, and `renderMap()` restores the
-  focused node. That is the standard to match, not exceed.
+  focus survives the 8s refresh that rebuilds the markup under it — `paint()` restores
+  `document.activeElement` for every panel built on `expandRow()`, `renderBacklog()` and
+  `renderBoard()` do it for the older three, and `renderMap()` restores the focused node.
+  That is the standard to match, not exceed. `paint()` restores the panel's scroll
+  position for the same reason: a card that jumps back to its first row every eight
+  seconds is unreadable by anyone who cannot re-find their place at a glance.
 - **Many stops or one stop with arrows, never a wall.** A list of controls is fine. Seven
   hundred tab stops between the filter box and the next section is not: the map gives one
   stop per diagram and walks the beads inside it with the arrow keys (roving tabindex —
@@ -233,7 +239,7 @@ Other things not to erode:
 | `backlog.py` | The `backlog` read: each rig's whole backlog with its structure intact — the epic hierarchy, the `blocks` edges, and why every closed bead closed. The Work tab's reads are all about this minute; this is the one a ceremony reads. Slowest cadence, biggest payload, trimmed hardest. Also owns the prose table behind `GET /api/bead` — the four long fields, kept beside the panel rather than in it — and `apply_write()`, which folds a bead the console just wrote into that cache so a save is visible before the next read lands. |
 | `graph.py` | The same beads, drawn: epic trees and the `blocks` graph as SVG, laid out in stdlib Python. Not a read — it takes what `backlog.py` has already trimmed and rides inside that panel, so the picture and the lists beside it can never be a cadence apart. The one place markup is generated on the server, which is why it does its own escaping. Its nodes are controls rather than boxes — focusable, named, and read out in full by `app.js` — because every title in here is clipped to a pixel budget. |
 | `static/index.html` | The whole page skeleton; every panel is an empty `<div id=…>`. |
-| `static/app.js` | Fetch, state, and all rendering. Vanilla JS, no framework. |
+| `static/app.js` | Fetch, state, and all rendering. Vanilla JS, no framework. Six lists drill a row down into the rest of what its read already carried; the shared half of that is the "expandable detail" section near the top — `state.open`, `expandRow()`, `detailGrid()`, `prose()`, `paint()`, `expander()`. Expansion keys are namespaced per panel, because one flat set would let a mail id and a rig name mean the same row. |
 | `static/app.css` | Themes via `:root` custom properties + `:root[data-theme="light"]`. |
 | `start.sh` | Restart helper; `--lan` binds `0.0.0.0` and prints a tokenized URL. |
 

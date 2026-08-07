@@ -173,9 +173,18 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
   padding: 11px 14px; border-bottom: 1px solid var(--border-soft); background: var(--surface-2);
 }
 .card-body { padding: 6px; }
-.scroll-y { max-height: 320px; overflow-y: auto; }
+/* Recently closed is the one card that scrolls inside itself, and its rows now open.
+   An expansion and the cap are competing for the same pixels, so the cap is a little
+   higher than it was and the prose inside it a little shorter than a full-width one —
+   enough that an opened closure is readable without the card becoming the page. */
+.scroll-y { max-height: 420px; overflow-y: auto; }
+.scroll-y .prose-box { max-height: 150px; }
 
 .stack { display: flex; flex-direction: column; gap: 8px; }
+/* A stack is a list, and a list inside a height cap has to overflow rather than squash:
+   flex items shrink by default, which would compress forty closures into one card's
+   worth of slivers instead of letting `.scroll-y` scroll them. */
+.stack > * { flex-shrink: 0; }
 
 /* ---------- rows ---------- */
 .row {
@@ -215,24 +224,28 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 .badge.warn { background: color-mix(in srgb, var(--yellow) 14%, transparent); border-color: color-mix(in srgb, var(--yellow) 40%, transparent); color: var(--yellow); }
 .badge.epic { background: color-mix(in srgb, var(--purple) 14%, transparent); border-color: color-mix(in srgb, var(--purple) 40%, transparent); color: var(--purple); }
 
-/* ---------- expandable rows (agents, convoys, beads) ---------- */
-.agent, .convoy, .bead {
+/* ---------- expandable rows (agents, convoys, beads, mail, closures, rigs) ----------
+   `.exp` is the shared one — see "expandable detail" in app.js. The three named ones
+   predate it and keep their own markup; everything that makes them look and behave
+   alike is in the selector lists below, so a change here reaches all six. */
+.agent, .convoy, .bead, .exp {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius-sm); box-shadow: var(--shadow); overflow: hidden;
 }
-.agent:hover, .convoy:hover, .bead:hover { border-color: var(--faint); }
-.agent-row, .convoy-row, .bead-row {
+.agent:hover, .convoy:hover, .bead:hover, .exp:hover { border-color: var(--faint); }
+.agent-row, .convoy-row, .bead-row, .exp-row {
   width: 100%; min-height: 52px; text-align: left; cursor: pointer;
   background: none; border: 0; border-radius: 0;
 }
 .agent-row:focus-visible, .convoy-row:focus-visible,
-.bead-row:focus-visible { outline: 2px solid var(--blue); outline-offset: -3px; }
+.bead-row:focus-visible, .exp-row:focus-visible { outline: 2px solid var(--blue); outline-offset: -3px; }
 /* spans, not divs, so the markup stays valid inside a <button> */
 .agent-row .row-main, .agent-row .title,
 .convoy-row .row-main, .convoy-row .title,
-.bead-row .row-main, .bead-row .title { display: block; }
-/* A bead with nothing under the fold is drawn as a row rather than a dead button. */
-.bead-row.is-flat { display: flex; cursor: default; }
+.bead-row .row-main, .bead-row .title,
+.exp-row .row-main, .exp-row .title { display: block; }
+/* A row with nothing under the fold is drawn as a row rather than a dead button. */
+.bead-row.is-flat, .exp-row.is-flat { display: flex; cursor: default; }
 
 /* The working agent is the answer this tab exists to give: tinted, edged in blue,
    with a live dot. It has to survive a five-row scan on a phone. */
@@ -269,10 +282,14 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 .chev { color: var(--faint); transition: transform .15s; }
 .agent-row[aria-expanded="true"] .chev,
 .convoy-row[aria-expanded="true"] .chev,
-.bead-row[aria-expanded="true"] .chev { transform: rotate(90deg); }
+.bead-row[aria-expanded="true"] .chev,
+.exp-row[aria-expanded="true"] .chev { transform: rotate(90deg); }
 
-.agent-detail {
-  padding: 11px 13px; background: var(--surface-2); border-top: 1px solid var(--border-soft);
+.agent-detail { background: var(--surface-2); border-top: 1px solid var(--border-soft); }
+.exp-detail { background: var(--surface-2); border-top: 1px solid var(--border-soft); padding-bottom: 3px; }
+/* The label/value grid every detail panel is built out of. */
+.detail-grid {
+  padding: 11px 13px;
   display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px 18px;
 }
 .detail-item { min-width: 0; }
@@ -361,16 +378,20 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 .bead-detail { padding: 2px 6px 6px; background: var(--surface-2); border-top: 1px solid var(--border-soft); }
 .bead-child + .bead-child { border-top: 1px solid var(--border-soft); }
 
-/* Agent-authored prose — an epic's description, or why something closed. It arrives
-   with its own line breaks and is clipped by the server (backlog.CLIP), so preserve
-   the breaks, wrap the long lines, and cap the height rather than let one bead push
-   the next four off the screen. */
-.bead-text {
+/* Agent-authored prose — an epic's description, why something closed, a mail body. It
+   arrives with its own line breaks and can be clipped by the server (backlog.CLIP), so
+   preserve the breaks, wrap the long lines, and cap the height rather than let one bead
+   push the next four off the screen.
+   The cap is a scroll, not a truncation, and the box carries tabindex="0" so that
+   scroll is reachable from a keyboard as well as from a finger or a wheel — a pane
+   whose overflow only a mouse can move is hover-only content by another name. */
+.prose-box {
   margin: 8px 6px; padding: 9px 11px; max-height: 240px; overflow-y: auto;
   background: var(--surface-3); border: 1px solid var(--border-soft); border-radius: var(--radius-sm);
   font-size: 12.5px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere;
 }
-.bead-text-label {
+.prose-box:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+.prose-label {
   display: block; margin-bottom: 5px; font-size: 11px; font-weight: 650;
   text-transform: uppercase; letter-spacing: .06em; color: var(--faint);
 }
@@ -384,9 +405,10 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
   overflow-wrap: anywhere;
 }
 .bead-blocked { color: var(--red); }
-/* Why it closed, one line of it, on the row. This one keeps its clip, because it has a
-   recovery path that a tooltip is not: the row is a button, and the whole reason is
-   under the fold in `.bead-text` — reachable by tap and by keyboard alike. */
+/* Why it closed, one line of it, on the row — on the Backlog tab's closures and on the
+   Recently closed card alike. This one keeps its clip, because it has a recovery path
+   that a tooltip is not: the row is a button, and the whole reason is under the fold in
+   `.prose-box` — reachable by tap and by keyboard alike. */
 .bead-reason {
   display: block; margin-top: 4px; font-size: 12px; color: var(--muted);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -486,12 +508,16 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 .section-head { display: flex; align-items: baseline; gap: 9px; margin: 0 2px 10px; font-size: 15px; }
 .section-head .muted { font-size: 12px; font-weight: 400; }
 
-/* ---------- rigs ---------- */
-.rig { padding: 12px; border-radius: var(--radius-sm); }
-.rig + .rig { border-top: 1px solid var(--border-soft); }
-.rig-head { display: flex; align-items: center; gap: 10px; }
+/* ---------- rigs ----------
+   The card is an `.exp`, so the border, the hover and the focus ring come from there;
+   what is left here is the two stacked lines inside the button. */
+.rig-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .rig-name { font-weight: 600; }
 .rig-stats { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+/* The rig's own agents, under the fold. Indented a hair so the roster reads as
+   belonging to the rig above it rather than as a second list of rigs. */
+.rig-roster { padding: 4px 6px 2px; }
+.rig-agent + .rig-agent { border-top: 1px solid var(--border-soft); }
 .stat {
   display: flex; align-items: baseline; gap: 5px; padding: 4px 9px;
   background: var(--surface-3); border: 1px solid var(--border-soft); border-radius: 6px; font-size: 12px;
@@ -564,6 +590,20 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 .mic.is-live { background: color-mix(in srgb, var(--red) 20%, transparent); border-color: var(--red); color: var(--red); animation: pulse 1.3s ease-in-out infinite; }
 @keyframes pulse { 50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--red) 12%, transparent); } }
 .compose-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+
+/* ---------- mail ---------- */
+/* The first line of the message, on the row. It keeps its clip for the same reason
+   `.bead-reason` does — the row is a button and the whole body is under the fold, in a
+   `.prose-box` that scrolls — and it is deliberately quieter than the subject above it:
+   the subject is what the sender chose to call this, the peek is a glance at it. */
+.mail-peek {
+  display: block; margin-top: 4px; font-size: 12px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Unread is already a badge and a group — this is the third carrier, so an operator
+   scanning on a phone can find the edge of the read pile without reading either. */
+.exp.is-unread { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.exp.is-unread .title { font-weight: 650; }
 
 /* ---------- states ---------- */
 .empty { padding: 26px 14px; text-align: center; color: var(--faint); font-size: 13px; }
@@ -727,7 +767,7 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 /* The prose blocks are the reason the pane is a pane. They are not clipped by the
    server here (backlog.py sends them whole), so they get room and their own scroll. */
 .pane-prose { margin-top: 14px; }
-.pane-prose .bead-text { margin: 8px 0; max-height: 340px; }
+.pane-prose .prose-box { margin: 8px 0; max-height: 340px; }
 .pane-wait { padding: 10px 2px; color: var(--muted); font-size: 12.5px; font-style: italic; }
 
 /* ---------- the pane's forms ----------
@@ -831,16 +871,20 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
   .chip { padding: 8px 13px; }
   .bcol-more { padding: 9px 6px; }
   .field.narrow { flex: 1 1 46%; }
-  .scroll-y { max-height: 260px; }
+  .scroll-y { max-height: 360px; }
   /* The whole row is the expand affordance — keep it a comfortable thumb target,
      and let the badges wrap instead of squeezing the name off the row. */
-  .agent-row, .bead-row { min-height: 56px; }
+  .agent-row, .bead-row, .exp-row { min-height: 56px; }
   .agent-row .row-side,
-  .bead-row .row-side { flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+  .bead-row .row-side,
+  .exp-row .row-side { flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
   /* Three bead sections stacked on a phone; the prose gets less of the viewport so the
      row you expanded and the one after it are both still on screen. */
-  .bead-text { max-height: 180px; }
-  .agent-detail { grid-template-columns: repeat(auto-fit, minmax(136px, 1fr)); gap: 9px 14px; }
+  .prose-box { max-height: 180px; }
+  .detail-grid { grid-template-columns: repeat(auto-fit, minmax(136px, 1fr)); gap: 9px 14px; padding: 10px 11px; }
+  /* A rig's stats are five chips; on a phone they are the second and third line of the
+     row, which is fine — what is not is the roster's rows inheriting a desktop gap. */
+  .rig-roster { padding: 3px 3px 1px; }
   /* Watching is the reason the console is on a phone at all — a tmux attach never
      will be — so the terminal button gets a full thumb target and the screen gets
      more of the viewport. The attach command drops to its own line rather than
@@ -871,7 +915,7 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
   .bcard-title { -webkit-line-clamp: 2; line-clamp: 2; }
   .lane-bar-track { display: none; }
   .pane-body { padding: 11px 12px 14px; }
-  .pane-prose .bead-text { max-height: 240px; }
+  .pane-prose .prose-box { max-height: 240px; }
   /* The write controls are the smallest things on the pane and the most consequential,
      so they get a thumb on a phone like every other tap target here. The foot's buttons
      take the full width rather than sharing a line with the note, which on 360px would

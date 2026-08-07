@@ -63,6 +63,13 @@ function ago(ts) {
   return `${Math.round(s / 86400)}d ago`;
 }
 
+/** The same instant, spelled out. Rows say "6m ago" because that is what a glance
+    wants; a detail panel is where somebody went looking for the actual time. */
+function when(ts) {
+  const t = stamp(ts);
+  return t === null ? "" : new Date(t).toLocaleString();
+}
+
 const state = {
   snap: null, view: "overview", q: "", source: "all", prio: "all", busy: false,
   // Agents tab: which rows are expanded, keyed by agent address. Lives here rather
@@ -74,6 +81,10 @@ const state = {
   // there), and its own expansion set, keyed by bead id. One set across all four of
   // its sections — a bead expanded as an epic is the same bead expanded as a closure.
   bq: "", brig: "all", beads: new Set(),
+  // Mail, Recently closed and Rigs share one set, because they share one expander —
+  // see "expandable detail" below. Keys are namespaced by panel ("mail:hq-lzx"), which
+  // is what keeps a mail id and a rig name from ever meaning the same row.
+  open: new Set(),
   // The Board tab. Its own filter pair again — it draws the same beads as the Backlog
   // tab through a different question, and a shared filter box would mean answering one
   // of them changed the other. `lanes` holds the COLLAPSED swimlanes rather than the
@@ -173,6 +184,88 @@ const empty = (msg) => `<div class="empty">${esc(msg)}</div>`;
 const SKEL = '<div class="skeleton"></div><div class="skeleton"></div>';
 const loadingOf = (n) => panel(n).loading && panel(n).data == null;
 const anyLoading = () => Object.keys(state.snap?.panels || {}).some(loadingOf);
+
+/* ---------------- expandable detail ----------------
+   Six lists on this page now open a row onto the rest of what the read already carried,
+   and every one of them meets the same two problems.
+
+   The 8s refresh replaces a panel's markup wholesale, so <details>, a class on a node,
+   or anything else that keeps "open" in the DOM is destroyed and rebuilt every cycle —
+   an open panel slams shut while it is being read. Expansion therefore lives in module
+   state and the markup is derived from it (gc-6gp). Keyboard focus goes the same way:
+   the button under the operator's finger is a different element after a render, so it
+   is found again by key rather than left to fall back to <body>.
+
+   Keys are namespaced by panel. One flat set keyed by id would let a mail id and a rig
+   name collide, and the DOM ids derived from them have to stay unique across a page
+   that has every tab's markup in it at once.
+
+   The three older expanders — agents, convoys, beads — predate this and keep their own
+   sets and their own row builders. They are working, tested code and rewriting them to
+   save a few lines would be a regression looking for somewhere to happen. What matters
+   is shared already: .detail-grid, .detail-item, the chevron, aria-expanded /
+   aria-controls, and the focus restore. */
+const openKey = (ns, id) => `${ns}:${id}`;
+const isOpen = (ns, id) => state.open.has(openKey(ns, id));
+const openId = (ns, id) => `${ns}-detail-${String(id).replace(/[^a-zA-Z0-9]+/g, "-")}`;
+const CHEV = '<svg viewBox="0 0 24 24" class="ico chev" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>';
+
+/** The dl a detail panel is made of. Blank values are dropped rather than drawn empty:
+    gt omits a field as often as it fills one, and "Thread —" answers nothing. */
+const detailGrid = (fields) => `<dl class="detail-grid">${fields
+  .filter(([, v]) => v !== "" && v !== null && v !== undefined)
+  .map(([k, v, cls = ""]) => `<div class="detail-item"><dt>${esc(k)}</dt><dd class="${esc(cls)}">${esc(v)}</dd></div>`)
+  .join("")}</dl>`;
+
+/** Agent-authored prose — a mail body, a description, the reason something closed. It
+    arrives with its own line breaks, so it is pre-wrapped rather than collapsed, and it
+    is escaped here like every other string that came out of an agent. The box scrolls
+    past a few hundred pixels and is focusable so that scroll is reachable from a
+    keyboard, not just from a finger or a wheel. */
+const prose = (label, text) => (text ? `<div class="prose-box" tabindex="0" role="group"
+  aria-label="${esc(label)}"><span class="prose-label">${esc(label)}</span>${esc(text)}</div>` : "");
+
+/** One expandable row: a button carrying the summary, and the panel it opens onto.
+    `main`, `side`, `lead` and `detail` are already-escaped markup. A row with nothing
+    under the fold is drawn flat rather than as a button that opens an empty box — the
+    same bargain beadRow makes, for the same reason. */
+function expandRow(ns, id, { cls = "", lead = "", main, side = "", detail = "" }) {
+  const inner = `${lead}<span class="row-main">${main}</span>
+      <span class="row-side">${side}${detail ? CHEV : ""}</span>`;
+  if (!detail) return `<div class="exp ${esc(cls)}"><span class="row exp-row is-flat">${inner}</span></div>`;
+  const open = isOpen(ns, id);
+  return `
+    <div class="exp ${esc(cls)}">
+      <button type="button" class="row exp-row" data-open="${esc(openKey(ns, id))}"
+              aria-expanded="${open}" aria-controls="${esc(openId(ns, id))}">${inner}</button>
+      ${open ? `<div class="exp-detail" id="${esc(openId(ns, id))}">${detail}</div>` : ""}
+    </div>`;
+}
+
+/** Write a panel's markup without dropping the keyboard, or the reader's place in it.
+    Called instead of a bare innerHTML by every panel that has expandable rows.
+    Recently closed scrolls inside its own card (.scroll-y), and an innerHTML rewrite
+    resets that scroll — so opening the ninth row would have thrown the page back to the
+    first one, every eight seconds and again on every click. */
+function paint(sel, html) {
+  const el = $(sel);
+  const focused = document.activeElement?.dataset?.open;
+  const top = el.scrollTop;
+  el.innerHTML = html;
+  el.scrollTop = top;
+  if (focused) $$(`${sel} [data-open]`).find((x) => x.dataset.open === focused)?.focus();
+}
+
+/** One delegated listener per panel — the rows themselves are replaced every render,
+    so per-row handlers would not survive the first refresh. */
+function expander(sel, rerender) {
+  $(sel).addEventListener("click", (ev) => {
+    const row = ev.target.closest("[data-open]");
+    if (!row) return;
+    if (!state.open.delete(row.dataset.open)) state.open.add(row.dataset.open);
+    rerender();
+  });
+}
 
 /* ---------------- render ---------------- */
 function render() {
@@ -311,35 +404,87 @@ function renderKpis(s) {
   pm.classList.toggle("hot", unread > 0);
 }
 
+/* A rig's own crew, which `gt status --json` has always carried under `agents` and this
+   card summed into "3 polecats · 1 crew". A count answers how many and never which, so
+   the numbers stay on the row and the roster goes under the fold — each agent with the
+   activity the Agents tab derives for it, because two places in this console saying
+   different things about the same agent is worse than one place saying nothing.
+   `hooks` is the same story: it was a count of the rig's hooks with work on them, and
+   it names the agents holding them. */
+const RIG_ROLE_RANK = { witness: 0, refinery: 1, polecat: 2, crew: 3 };
+
+function rigAgents(r, ctx) {
+  // `gt` builds this list per rig; order it here anyway, the way the Agents tab groups.
+  const hooked = new Set((r.hooks || []).filter((h) => h.has_work).map((h) => h.agent));
+  const agents = byKey(r.agents || [], (a) =>
+    `${RIG_ROLE_RANK[a.role] ?? 4} ${a.address || a.name || ""}`);
+  if (!agents.length) return empty("No agents on this rig");
+  return agents.map((a) => {
+    // agentState reads the rig off the agent — a parked rig is why an agent has no
+    // session — and the rig's agents do not carry one, so it is put back here.
+    const st = agentState({ ...a, rig: r.name }, ctx);
+    return `
+      <div class="row rig-agent">
+        <i class="dot ${st.dot}"></i>
+        <div class="row-main">
+          <div class="title wrap">${esc(a.name || "")}
+            <span class="muted mono">${esc(a.address || "")}</span></div>
+          <div class="sub">
+            <span>${esc(a.role || "")}</span>
+            <span class="mono">${esc(a.session || "no session")}</span>
+            ${a.unread_mail ? `<span class="badge warn">${esc(a.unread_mail)} mail</span>` : ""}
+            ${hooked.has(a.address) ? '<span class="badge ok">has work</span>' : ""}
+          </div>
+        </div>
+        <div class="row-side"><span class="badge ${st.badge}">${esc(st.label)}</span></div>
+      </div>`;
+  }).join("");
+}
+
+function rigRow(r, m, ctx) {
+  const hooks = (r.hooks || []).filter((h) => h.has_work).length;
+  // Parked is a decision, not a fault — grey, and named. Red is reserved for a rig
+  // that is neither running nor deliberately stood down.
+  const parked = String(m.status || "").toLowerCase() === "parked";
+  return expandRow("rig", r.name, {
+    cls: "rig",
+    main: `
+      <span class="rig-head">
+        <i class="dot ${m.status === "operational" ? "on" : parked ? "done" : "off"}"></i>
+        <span class="rig-name">${esc(r.name)}</span>
+        ${parked ? '<span class="badge">parked</span>' : ""}
+        ${m.beads_prefix ? `<span class="badge mono">${esc(m.beads_prefix)}</span>` : ""}
+      </span>
+      <span class="rig-stats">
+        <span class="stat"><b>${r.has_witness ? "●" : "○"}</b><span>witness ${esc(m.witness || (r.has_witness ? "present" : "none"))}</span></span>
+        <span class="stat"><b>${r.has_refinery ? "●" : "○"}</b><span>refinery ${esc(m.refinery || (r.has_refinery ? "present" : "none"))}</span></span>
+        <span class="stat"><b>${num(r.polecat_count)}</b><span>polecats</span></span>
+        <span class="stat"><b>${num(r.crew_count)}</b><span>crew</span></span>
+        <span class="stat"><b>${hooks}</b><span>hooks with work</span></span>
+      </span>`,
+    detail: `<div class="rig-roster">${rigAgents(r, ctx)}</div>` + detailGrid([
+      ["Status", m.status, ""],
+      ["Beads prefix", m.beads_prefix, "mono"],
+      ["Witness", m.witness || (r.has_witness ? "present" : "none"), ""],
+      ["Refinery", m.refinery || (r.has_refinery ? "present" : "none"), ""],
+      ["Polecats", (r.polecats || []).join(", "), "wrap"],
+      ["Crew", (r.crews || []).join(", "), "wrap"],
+      ["Hooks with work", `${hooks} of ${(r.hooks || []).length}`, ""],
+    ]),
+  });
+}
+
 function renderRigs(s) {
   if (loadingOf("status")) return void ($("#rigs").innerHTML = SKEL);
   const meta = Object.fromEntries((dataOf("rigs", []) || []).map((r) => [r.name, r]));
   const rigs = byKey(s.rigs || [], (r) => r.name || "");   // no timestamp on a rig; keep it fixed
+  const ctx = agentCtx();
   $("#rig-count").textContent = rigs.length ? `${rigs.length} registered` : "";
-  $("#rigs").innerHTML = errNote("status") + (rigs.length ? rigs.map((r) => {
-    const m = meta[r.name] || {};
-    const hooks = (r.hooks || []).filter((h) => h.has_work).length;
-    // Parked is a decision, not a fault — grey, and named. Red is reserved for a rig
-    // that is neither running nor deliberately stood down.
-    const parked = String(m.status || "").toLowerCase() === "parked";
-    return `
-      <div class="rig">
-        <div class="rig-head">
-          <i class="dot ${m.status === "operational" ? "on" : parked ? "done" : "off"}"></i>
-          <span class="rig-name">${esc(r.name)}</span>
-          ${parked ? '<span class="badge">parked</span>' : ""}
-          ${m.beads_prefix ? `<span class="badge mono">${esc(m.beads_prefix)}</span>` : ""}
-        </div>
-        <div class="rig-stats">
-          <span class="stat"><b>${r.has_witness ? "●" : "○"}</b><span>witness ${esc(m.witness || (r.has_witness ? "present" : "none"))}</span></span>
-          <span class="stat"><b>${r.has_refinery ? "●" : "○"}</b><span>refinery ${esc(m.refinery || (r.has_refinery ? "present" : "none"))}</span></span>
-          <span class="stat"><b>${num(r.polecat_count)}</b><span>polecats</span></span>
-          <span class="stat"><b>${num(r.crew_count)}</b><span>crew</span></span>
-          <span class="stat"><b>${hooks}</b><span>hooks with work</span></span>
-        </div>
-      </div>`;
-  }).join("") : empty("No rigs registered"));
+  paint("#rigs", errNote("status") + (rigs.length
+    ? rigs.map((r) => rigRow(r, meta[r.name] || {}, ctx)).join("")
+    : empty("No rigs registered")));
 }
+expander("#rigs", () => renderRigs(dataOf("status", {}) || {}));
 
 function renderEscalations() {
   if (loadingOf("escalations")) return void ($("#escalations").innerHTML = SKEL);
@@ -371,18 +516,42 @@ function renderPriority() {
     </div>`).join("") : empty("No ready work");
 }
 
+/* Recently closed. `close_reason` and `type` ride along on every row of this read and
+   were drawn nowhere — and a close reason is routinely the most informative sentence
+   anyone in this town writes about a bead. The row carries it clipped to a line and the
+   expansion carries it whole, which is the same bargain the Backlog tab's closed
+   section makes with the same field. */
+function changelogRow(c) {
+  const reason = pick(c, ["close_reason", "reason"]);
+  const type = pick(c, ["type", "issue_type"]);
+  return expandRow("closed", pick(c, ["id"], c.title), {
+    main: `
+      <span class="title wrap">${esc(c.title)}</span>
+      <span class="sub">
+        <span class="mono">${esc(pick(c, ["id"]))}</span>
+        <span>${esc(c.rig || "")}</span>
+        <span>${esc(ago(pick(c, CHANGELOG_DATE)))}</span>
+      </span>
+      ${reason ? `<span class="bead-reason">${esc(reason)}</span>` : ""}`,
+    side: type && type !== "task"
+      ? `<span class="badge ${type === "epic" ? "epic" : ""}">${esc(type)}</span>` : "",
+    detail: prose("Why it closed", reason) + detailGrid([
+      ["Id", pick(c, ["id"]), "mono"],
+      ["Rig", c.rig, ""],
+      ["Type", type, ""],
+      ["Closed", when(pick(c, CHANGELOG_DATE)), ""],
+    ]),
+  });
+}
+
 function renderChangelog() {
   if (loadingOf("changelog")) return void ($("#changelog").innerHTML = SKEL);
   // Sort before the slice — truncating arrival order would drop the newest closures.
   const items = byNewest(dataOf("changelog", []) || [], CHANGELOG_DATE).slice(0, 40);
-  $("#changelog").innerHTML = errNote("changelog") + (items.length ? items.map((c) => `
-    <div class="row">
-      <div class="row-main">
-        <div class="title">${esc(c.title)}</div>
-        <div class="sub"><span class="mono">${esc(c.id)}</span><span>${esc(c.rig || "")}</span><span>${esc(ago(pick(c, CHANGELOG_DATE)))}</span></div>
-      </div>
-    </div>`).join("") : empty("Nothing closed yet"));
+  paint("#changelog", errNote("changelog")
+    + (items.length ? items.map(changelogRow).join("") : empty("Nothing closed yet")));
 }
+expander("#changelog", renderChangelog);
 
 /* ---------------- work ----------------
    This tab answers "what is happening in this town right now", and no single read
@@ -784,12 +953,6 @@ const beadDetailId = (id) => `bead-detail-${String(id).replace(/[^a-zA-Z0-9]+/g,
 const TRUNC = '<div class="bead-trunc">The server clipped this text — run '
   + '<code class="mono">bd show</code> on the id above for the whole thing.</div>';
 
-/** Agent-authored prose: a description, or the reason something closed. It arrives
-    with its own line breaks, so it is pre-wrapped rather than collapsed, and it is
-    escaped here like every other value that came out of a bead. */
-const beadText = (label, text) => (text ? `<div class="bead-text">
-  <span class="bead-text-label">${esc(label)}</span>${esc(text)}</div>` : "");
-
 /** One bead, as every section on this tab draws it — the sections differ only in what
     they put under the fold, because they are one object seen from four angles. A row
     with nothing under the fold is not a button at all: an expander that opens onto an
@@ -879,7 +1042,7 @@ function renderEpics(m) {
         style="width:${Math.round((done / total) * 100)}%;background:${done === total ? "var(--green)" : "var(--blue)"}"></span></span>`;
     const short = drawn.length < total
       ? `<div class="bead-trunc">${drawn.length} of ${total} children carried — the rest are older closed ones.</div>` : "";
-    const detail = beadText("Description", b.desc)
+    const detail = prose("Description", b.desc)
       + drawn.map((k) => beadLine(m, k)).join("") + short + (b.more ? TRUNC : "");
     return beadRow(m, b, note, detail);
   }).join("") : empty(all.length ? "No epic matches that filter" : "Nothing here has children");
@@ -934,7 +1097,7 @@ function renderClosed(m) {
   $("#closed").innerHTML = items.length ? items.map((b) => beadRow(
     m, b,
     b.close_reason ? `<span class="bead-reason">${esc(b.close_reason)}</span>` : "",
-    beadText("Why it closed", b.close_reason) + (b.close_reason && b.more ? TRUNC : ""),
+    prose("Why it closed", b.close_reason) + (b.close_reason && b.more ? TRUNC : ""),
   )).join("") : empty(all.length ? "Nothing closed matches that filter" : "Nothing closed yet");
 }
 
@@ -1609,7 +1772,7 @@ function paneProse(key) {
   if (!blocks.length) {
     return empty("Nothing written down on this bead — no description, plan or criteria");
   }
-  return blocks.map(([k, v]) => beadText(k, v)).join("");
+  return blocks.map(([k, v]) => prose(k, v)).join("");
 }
 
 /** The pane's title bar, shared by the reading half and every form — one close button in
@@ -2347,7 +2510,7 @@ function agentDetail(a, models, ctx, work) {
     ["Model", (models || {})[agentKey(a)] || "", "mono"],
     ["ACP", a.acp ? "enabled" : "", ""],
   ];
-  return `<dl class="agent-detail" id="${esc(detailId(agentKey(a)))}">${fields
+  return `<dl class="agent-detail detail-grid" id="${esc(detailId(agentKey(a)))}">${fields
     .filter(([, v]) => v !== "" && v !== null && v !== undefined)
     .map(([k, v, cls]) => `<div class="detail-item"><dt>${esc(k)}</dt><dd class="${cls}">${esc(v)}</dd></div>`)
     .join("")}</dl>`;
@@ -2629,30 +2792,90 @@ async function copyCmd(btn) {
   setTimeout(() => { btn.textContent = was; }, 2500);
 }
 
-/* ---------------- mail ---------------- */
+/* ---------------- mail ----------------
+   This tab used to say that mail had arrived and never what it said. `body` is in every
+   row of the read and was drawn nowhere, and so were the routing and delivery fields
+   beside it — who it was addressed to, which thread it belongs to, what it is a reply
+   to, whether the recipient ever acknowledged it. All of it arrives on the 12s refresh
+   already; none of it cost a new read to surface (gc-f73).
+
+   A mail body is the most agent-authored string on this tab and the longest — protocol
+   headers, shell transcripts, a refinery arguing its case at four kilobytes. It is
+   escaped through esc() like everything else and pre-wrapped so the line breaks the
+   author wrote survive, and it never touches a markup path. */
+
+const unreadOf = (m) => !pick(m, ["read", "is_read"], false);
+const mailKey = (m) => String(pick(m, ["id", "thread_id", "subject"], ""));
+const mailBody = (m) => String(pick(m, ["body", "message", "text"], ""));
+
+/** gt spells a mail's priority as a word, not as the number a bead carries — so this
+    is its own map rather than a `p${n}` class, and anything unrecognised stays plain
+    instead of colouring a row on a guess. */
+const MAIL_PRIO = { critical: "p0", urgent: "p0", high: "p1", normal: "", low: "" };
+
+/** The one line of the message worth putting on a collapsed row: the first line with
+    anything on it. A peek, not a summary — which is honest only because the whole body
+    is one tap or one Enter away underneath, and that expansion is its recovery path. */
+function mailPeek(m) {
+  const line = mailBody(m).split("\n").map((l) => l.trim()).find(Boolean) || "";
+  return line.length > 160 ? `${line.slice(0, 159)}…` : line;
+}
+
+function mailDetail(m) {
+  // Two fields about one event, and neither says much alone: "acked" without who, or a
+  // name without a time. Joined they are the delivery receipt.
+  const acked = [pick(m, ["delivery_acked_by"]), when(pick(m, ["delivery_acked_at"]))]
+    .filter(Boolean).join(" · ");
+  return prose("Message", mailBody(m))
+    + detailGrid([
+      ["From", pick(m, ["from", "sender", "from_address"]), "mono"],
+      ["To", pick(m, ["to", "to_address", "recipient"]), "mono"],
+      ["Reply to", pick(m, ["reply_to", "in_reply_to"]), "mono"],
+      ["Thread", pick(m, ["thread_id"]), "mono"],
+      ["Received", when(pick(m, MAIL_DATE)), ""],
+      ["Read", unreadOf(m) ? "no" : "yes", ""],
+      ["Priority", pick(m, ["priority"]), ""],
+      ["Type", pick(m, ["type"]), ""],
+      ["Delivery", pick(m, ["delivery_state"]), ""],
+      ["Acknowledged", acked, "wrap"],
+      // Set on mail a wisp raised on its way past. Not documented anywhere the console
+      // can see, so it is reported as the flag it is rather than translated.
+      ["Wisp", m.wisp ? "yes" : "", ""],
+      ["Id", pick(m, ["id"]), "mono"],
+    ]);
+}
+
+function mailRow(m) {
+  const unread = unreadOf(m);
+  const peek = mailPeek(m);
+  const prio = String(pick(m, ["priority"], "")).toLowerCase();
+  const cls = MAIL_PRIO[prio];
+  return expandRow("mail", mailKey(m), {
+    cls: unread ? "is-unread" : "",
+    main: `
+      <span class="title wrap">${esc(pick(m, ["subject", "title"], "(no subject)"))}</span>
+      <span class="sub">
+        <span>from ${esc(pick(m, ["from", "sender", "from_address"], "?"))}</span>
+        <span>${esc(ago(pick(m, MAIL_DATE)))}</span>
+        ${m.type ? `<span class="badge">${esc(m.type)}</span>` : ""}
+        ${cls ? `<span class="badge ${cls}">${esc(prio)}</span>` : ""}
+      </span>
+      ${peek ? `<span class="mail-peek">${esc(peek)}</span>` : ""}`,
+    side: unread ? '<span class="badge p1">unread</span>' : "",
+    detail: mailDetail(m),
+  });
+}
+
 function renderMail() {
   if (loadingOf("mail")) return void ($("#mail").innerHTML = SKEL);
   // Unread first — it beats newest-first when the two conflict — and newest-first
   // orders within each group.
-  const unreadOf = (m) => !pick(m, ["read", "is_read"], false);
   const dated = byNewest(dataOf("mail", []) || [], MAIL_DATE);
   const items = [...dated.filter(unreadOf), ...dated.filter((m) => !unreadOf(m))];
-  $("#mail").innerHTML = errNote("mail") + (items.length ? items.map((m) => {
-    const unread = unreadOf(m);
-    return `
-      <div class="row row-card">
-        <div class="row-main">
-          <div class="title wrap">${esc(pick(m, ["subject", "title"], "(no subject)"))}</div>
-          <div class="sub">
-            <span>from ${esc(pick(m, ["from", "sender", "from_address"], "?"))}</span>
-            <span>${esc(ago(pick(m, MAIL_DATE)))}</span>
-            ${m.type ? `<span class="badge">${esc(m.type)}</span>` : ""}
-          </div>
-        </div>
-        <div class="row-side">${unread ? '<span class="badge p1">unread</span>' : ""}</div>
-      </div>`;
-  }).join("") : empty("Inbox empty"));
+  paint("#mail", errNote("mail")
+    + (items.length ? items.map(mailRow).join("") : empty("Inbox empty")));
 }
+expander("#mail", renderMail);
 
 $("#m-send").onclick = async () => {
   const body = {

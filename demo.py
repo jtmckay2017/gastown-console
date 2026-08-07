@@ -22,6 +22,24 @@ def _agent(name, address, role, session, running=True, state="idle", work=False,
             "agent_alias": "claude", "agent_info": "claude"}
 
 
+def _mail(mid, sender, subject, *, body="", read=False, type="notification",
+          priority="normal", thread="", reply_to="", wisp=False, **when):
+    """One row of `gt mail inbox --json`. Every key here is one gt actually sends; the
+    optional ones are omitted when empty exactly as gt omits them, so the console's
+    "field missing" path is the one the demo exercises for them."""
+    m = {"id": mid, "from": sender, "to": "mayor/", "subject": subject, "body": body,
+         "timestamp": _ago(**when), "read": read, "priority": priority, "type": type,
+         "delivery_state": "acked", "delivery_acked_by": "mayor/",
+         "delivery_acked_at": _ago(**when)}
+    if thread:
+        m["thread_id"] = thread
+    if reply_to:
+        m["reply_to"] = reply_to
+    if wisp:
+        m["wisp"] = True
+    return m
+
+
 def _pane(activity, note="", staged="", attached=False):
     """One entry of the `panes` read, shaped exactly as panes.by_session() returns it.
     Demo mode never opens a real tmux socket, so these are the only panes it sees."""
@@ -261,8 +279,14 @@ def fixtures():
             started = name == "web_platform"
             agents.append(_agent("joel", f"{name}/crew/joel", "crew",
                                  f"{prefix}-crew-joel", running=started))
+        # `gt status --json` names the polecats and the crew as well as counting them —
+        # verified against a live town. The names go under the fold on the Rigs card,
+        # so a fixture that carried only the counts would leave that panel half empty.
         rig_blocks.append({
-            "name": name, "polecats": None, "polecat_count": polecats, "crews": None,
+            "name": name,
+            "polecats": [a["name"] for a in agents if a["role"] == "polecat"],
+            "polecat_count": polecats,
+            "crews": [a["name"] for a in agents if a["role"] == "crew"],
             "crew_count": 1 if polecats else 0, "has_witness": True, "has_refinery": True,
             "hooks": [{"agent": f"{name}/{a['name']}", "role": a["role"],
                        "has_work": a["has_work"]} for a in agents],
@@ -551,13 +575,36 @@ def fixtures():
         "backlog": backlog,
         # Every list below arrives deliberately out of order — the console sorts each one
         # newest-first itself (gc-feh), and a pre-sorted fixture would hide a regression.
+        # `gt mail inbox --json`, real shape — verified against a live town, and richer
+        # than this fixture used to admit. The body is the message and it is multi-line;
+        # the routing (to, thread_id, reply_to) and the delivery receipt (state, who
+        # acked it, when) all arrive on every row. gt dates these with `timestamp`, not
+        # `created_at`. One message deliberately has no body at all — mail a wisp raised
+        # often carries only a subject — so the detail panel's "no message to show" path
+        # is exercised rather than only its happy one.
         "mail": [
-            {"id": "m-9c1", "from": "deacon/", "subject": "Nightly patrol clean across 3 rigs",
-             "type": "notification", "read": True, "created_at": _ago(hours=8)},
-            {"id": "m-9e7", "from": "billing_api/refinery", "subject": "Merge queue drained — 3 landed",
-             "type": "notification", "read": False, "created_at": _ago(minutes=41)},
-            {"id": "m-9f2", "from": "web_platform/Toast", "subject": "PR ready: session rotation fix",
-             "type": "task", "read": False, "created_at": _ago(minutes=6)},
+            _mail("m-9c1", "deacon/", "Nightly patrol clean across 3 rigs", hours=8,
+                  read=True, thread="thread-4b21c0", body=(
+                      "Patrol complete. 3 rigs, 11 sessions, no stalls.\n\n"
+                      "  web_platform   ok   5 sessions\n"
+                      "  billing_api    ok   3 sessions\n"
+                      "  mobile_app     parked (expected)\n\n"
+                      "Next patrol in 6h.")),
+            _mail("m-9e7", "billing_api/refinery", "Merge queue drained — 3 landed",
+                  minutes=41, thread="thread-8f0d91", reply_to="m-9b3", type="reply",
+                  body=("Queue is empty. Landed ba-29, ba-30 and wp-98 in that order; "
+                        "ba-31 held back, it wants the escalation answered first.")),
+            _mail("m-9f2", "web_platform/Toast", "PR ready: session rotation fix",
+                  minutes=6, type="task", priority="high", thread="thread-8f0d91", body=(
+                      "PR #482 is up and green.\n\n"
+                      "WHAT CHANGED. The session cookie is now rotated on every "
+                      "privilege change rather than only at login, which closes the "
+                      "window where an escalated session kept its pre-escalation id.\n\n"
+                      "WHAT I COULD NOT TEST. The SSO path — the staging IdP has been "
+                      "down since yesterday. Everything else is covered.\n\n"
+                      "Needs a review before it can go in the queue.")),
+            _mail("m-9g8", "hq/wisp-2ka", "Wisp raised: stale hook on mobile_app/Nux",
+                  minutes=18, wisp=True, thread="hq-wisp-2ka"),
         ],
         "escalations": [
             {"id": "ba-31", "title": "[HIGH] Invoice totals drift on split refunds — needs a human call",
@@ -572,13 +619,25 @@ def fixtures():
             {"title": "merged #479 into main", "agent": "billing_api/refinery",
              "rig": "billing_api", "at": _ago(minutes=22)},
         ],
+        # `gt changelog --json` carries `close_reason` on every row, and in a real town
+        # those run from three words to three paragraphs — which is why the card clips
+        # one to a line and puts the whole of it under the fold. Both lengths are here,
+        # and so is a closure that gave no reason at all.
         "changelog": [
             {"id": "ma-9", "title": "Fix crash on empty push payload", "type": "bug",
              "rig": "mobile_app", "closed_at": _ago(days=1), "close_reason": "Merged in #471"},
             {"id": "wp-98", "title": "Cache the pricing table per request", "type": "task",
-             "rig": "web_platform", "closed_at": _ago(hours=3), "close_reason": "Merged in #479"},
+             "rig": "web_platform", "closed_at": _ago(hours=3), "close_reason": (
+                 "Merged in #479, but not the way the bead described.\n\n"
+                 "The per-request cache turned out to be the wrong layer — two requests "
+                 "in the same checkout still paid for the lookup twice. It is cached per "
+                 "connection instead, invalidated on the pricing table's own version "
+                 "column, which is what the ledger already keys on.\n\n"
+                 "FOLLOW-UP FILED: wp-131, the same treatment for the tax table.")},
             {"id": "ba-29", "title": "Backfill missing customer tax ids", "type": "chore",
              "rig": "billing_api", "closed_at": _ago(hours=7), "close_reason": "Merged in #477"},
+            {"id": "ba-27", "title": "Retire the v1 invoice renderer", "type": "task",
+             "rig": "billing_api", "closed_at": _ago(days=2)},
         ],
         # `gt convoy list --json`, real shape: a convoy carries its own progress and
         # the beads it tracks, each with the agent holding it. The tracked ids are the
