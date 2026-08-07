@@ -70,6 +70,12 @@ def run_gt(args, timeout=60):
 
 
 def refresh(name):
+    """Run one read into the cache. Scheduler thread only — this blocks on `gt`."""
+    if DEMO:
+        # Demo serves fixtures and must never shell out; keep what was seeded.
+        with _guard:
+            _cache[name]["inflight"] = False
+        return
     args, interval = READS[name]
     data, err = run_gt(args)
     with _guard:
@@ -96,18 +102,28 @@ def scheduler():
         time.sleep(1)
 
 
-def mark_all_due():
+def mark_due(*names):
+    """Make panels eligible for the next scheduler tick. Never blocks on `gt`."""
     with _guard:
-        for e in _cache.values():
-            e["due"] = 0.0
+        for n in (names or _cache):
+            _cache[n]["due"] = 0.0
+
+
+def _view(entry, now):
+    return {"data": entry["data"], "error": entry["error"], "loading": entry["loading"],
+            "age": round(now - entry["at"], 1) if entry["at"] else None}
+
+
+def panel(name):
+    now = time.time()
+    with _guard:
+        return _view(_cache[name], now)
 
 
 def snapshot():
     now = time.time()
     with _guard:
-        panels = {n: {"data": e["data"], "error": e["error"], "loading": e["loading"],
-                      "age": round(now - e["at"], 1) if e["at"] else None}
-                  for n, e in _cache.items()}
+        panels = {n: _view(e, now) for n, e in _cache.items()}
     return {"at": now, "panels": panels}
 
 
@@ -129,8 +145,7 @@ def send_mail(body):
         # gt appends its full usage block to failures; the first stanza is the reason.
         reason = (p.stderr or p.stdout or "send failed").split("Usage:")[0].strip()
         return {"ok": False, "error": reason or "send failed"}, 502
-    with _guard:
-        _cache["mail"]["due"] = 0.0
+    mark_due("mail")
     return {"ok": True, "detail": (p.stdout or "sent").strip()}, 200
 
 
@@ -190,16 +205,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._file(u.path[len("/static/"):], qs)
         if u.path == "/api/snapshot":
             if qs.get("fresh", ["0"])[0] == "1":
-                mark_all_due()
+                mark_due()
             return self._json(snapshot())
         if u.path.startswith("/api/panel/"):
             name = u.path.rsplit("/", 1)[-1]
             if name not in READS:
                 return self.send_error(404)
-            refresh(name)
-            with _guard:
-                e = _cache[name]
-                return self._json({"data": e["data"], "error": e["error"], "age": 0})
+            if qs.get("fresh", ["0"])[0] == "1":
+                mark_due(name)
+            return self._json(panel(name))
         self.send_error(404)
 
     def do_POST(self):

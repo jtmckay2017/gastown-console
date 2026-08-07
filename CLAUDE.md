@@ -23,8 +23,10 @@ not a module; `static/app.css` is hand-written CSS with custom properties.
 - A background scheduler thread (`scheduler()` in `server.py`) refreshes each panel on its own
   cadence into `_cache`. Cadences live in the `READS` table — that table is the single place a
   read is declared: name → (`gt` argv, refresh interval).
-- HTTP handlers **only read `_cache`**. `GET /api/snapshot` returns every panel plus its age.
-- `?fresh=1` does **not** block — `mark_all_due()` just sets panels due, and the scheduler picks
+- HTTP handlers **only read `_cache`**. `GET /api/snapshot` returns every panel plus its age;
+  `GET /api/panel/<name>` returns one panel in the same shape (debug convenience — the UI uses
+  only `/api/snapshot` and `POST /api/mail`).
+- `?fresh=1` does **not** block — `mark_due()` just sets panels due, and the scheduler picks
   them up a beat later. The UI compensates by re-polling (see `#refresh` in `app.js`).
 - A failed refresh **keeps the last good data** and attaches an error (`refresh()`), so a
   transient `gt` hiccup never blanks a live panel. Panels carry their own `age`; the UI shows
@@ -34,11 +36,9 @@ not a module; `static/app.css` is hand-written CSS with custom properties.
 Any change that makes a handler block on a subprocess is wrong, no matter how fast it looks on
 a quiet town. Measure on a busy town, not yours.
 
-**Known exception — do not extend it:** `GET /api/panel/<name>` calls `refresh()` inline and
-*does* block on `gt`. Nothing in `static/app.js` calls it (the UI uses only `/api/snapshot` and
-`POST /api/mail`); treat it as a debug-only escape hatch. It also has no `--demo` guard, so
-hitting it in demo mode runs the real `gt` and permanently clobbers the fixture. Tracked as
-`gc-eiq`. Do not wire it into the UI.
+There are now **no exceptions**: `refresh()` is called only from the scheduler pool, and it
+returns immediately under `--demo` so no read path can shell out with fixtures loaded. Both
+places that invoke `gt` (`refresh()` and `send_mail()`) are demo-guarded. Keep it that way.
 
 ## Security posture
 
