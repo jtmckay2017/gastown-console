@@ -68,6 +68,45 @@ or a real tmux socket, or a real beads repo — with fixtures loaded. Every plac
 subprocess (`refresh()`, `send_mail()`, and `panes.py`/`beads.py` beneath `refresh()`) is
 demo-guarded. Keep it that way.
 
+## Hard constraint 3: nothing is reachable by mouse only
+
+The operator reads this console on a phone. A hover is not available there, a hover is not
+available to a keyboard, and a hover was never available to a screen reader — so anything
+that only a hover can reach is not in the console at all. This is a constraint like the two
+above it: check a change against every line here before you claim it is done.
+
+- **No information is hover-only.** Hover is an enhancement, never the only path to content.
+  Whatever a hover reveals must also be reachable by tap, by keyboard focus, or by an
+  always-visible control. A `title=` attribute is a hover; so is a `<title>` in SVG.
+- **Truncation requires a recovery path**, and a native tooltip is not one. If text is
+  clipped, there is a discoverable, non-hover way to read all of it. Three shapes of that
+  answer are already here, so copy one rather than inventing a fourth: a row that clips and
+  expands (`beadRow()` in `app.js`, the whole prose under the fold); a card that clips and
+  opens a pane (`.bcard-title` → `paneHtml()`); a diagram node that clips and reads out
+  (`graph.py` `_node()` → `paintRead()` in `app.js`). Where something still clips, the CSS
+  rule says which of those is its recovery path — keep that comment true.
+- **Keyboard reachable, and visibly so.** Every interactive element is focusable and
+  operable without a mouse, with a focus indicator. `:focus-visible` in `app.css` is the
+  floor for anything nobody styled. Expanders carry `aria-expanded` and `aria-controls`, and
+  focus survives the 8s refresh that rebuilds the markup under it — `renderBacklog()` and
+  `renderBoard()` both restore `document.activeElement`, and `renderMap()` restores the
+  focused node. That is the standard to match, not exceed.
+- **Many stops or one stop with arrows, never a wall.** A list of controls is fine. Seven
+  hundred tab stops between the filter box and the next section is not: the map gives one
+  stop per diagram and walks the beads inside it with the arrow keys (roving tabindex —
+  `mapRoving()`/`mapFocus()`), and says so in words on the page.
+- **Touch targets.** Real tap targets, not hover-only affordances, and comfortably hittable
+  on a phone — the `max-width: 760px` block grows the rows, the chips and the icon buttons
+  for exactly this.
+- **Contrast and theme.** Legible in **both** themes; there is a toggle and both are used.
+  Colour is never the only carrier of meaning: a blocked bead is red *and* dashed *and*
+  flagged (`graph.py` `_node()`, `.g-block` in `app.css`), and every status dot sits beside
+  the same status in words.
+- **Screen-reader sanity.** Meaningful names on controls and diagrams. An SVG gets a role and
+  an `aria-label` — but note `role="img"` makes its children presentational, which is why the
+  figures are `role="group"` now that the nodes inside them are controls. Decorative glyphs
+  are `aria-hidden`.
+
 ## Bead reads run in the rig's directory — always
 
 Every rig keeps its **own** Dolt database, and `bd` chooses one from the directory it runs in.
@@ -119,9 +158,11 @@ Other things not to erode:
   at all. The **one** exception is the Backlog tab's map, which arrives from the server as
   SVG and is assigned straight through `innerHTML` — so `graph.py` takes on that escaping
   obligation itself, for every bead title and id it draws, and emits a closed tag set with no
-  script, no handler and no URL in it. Read the note at the top of that file before adding to
-  it. SVG text is an injection surface exactly like HTML is, and a second such exception
-  should be argued for rather than assumed.
+  script, no handler and no URL in it. The attribute set is closed the same way, and two of
+  them carry bead data — `aria-label` and `data-node`, which is what makes a clipped title
+  readable without a mouse — so `_txt()` escapes quotes as well as angle brackets. Read the
+  note at the top of that file before adding to it. SVG text is an injection surface exactly
+  like HTML is, and a second such exception should be argued for rather than assumed.
 - `_file()` refuses paths that escape `static/`.
 
 ## Layout
@@ -135,7 +176,7 @@ Other things not to erode:
 | `beads.py` | The one way to run `bd`. Owns repo discovery and the invocation, because a bead read against the wrong directory answers "nothing" instead of failing — see the section above. |
 | `flight.py` | The `flight` read: every bead that is neither open nor closed, and who holds it. `gt ready` drops a bead the moment it is picked up and no `gt` read carries an agent's work, so this is the only answer to "what is being worked on". One `bd list` per beads repo in town. |
 | `backlog.py` | The `backlog` read: each rig's whole backlog with its structure intact — the epic hierarchy, the `blocks` edges, and why every closed bead closed. The Work tab's reads are all about this minute; this is the one a ceremony reads. Slowest cadence, biggest payload, trimmed hardest. Also owns the prose table behind `GET /api/bead` — the four long fields, kept beside the panel rather than in it. |
-| `graph.py` | The same beads, drawn: epic trees and the `blocks` graph as SVG, laid out in stdlib Python. Not a read — it takes what `backlog.py` has already trimmed and rides inside that panel, so the picture and the lists beside it can never be a cadence apart. The one place markup is generated on the server, which is why it does its own escaping. |
+| `graph.py` | The same beads, drawn: epic trees and the `blocks` graph as SVG, laid out in stdlib Python. Not a read — it takes what `backlog.py` has already trimmed and rides inside that panel, so the picture and the lists beside it can never be a cadence apart. The one place markup is generated on the server, which is why it does its own escaping. Its nodes are controls rather than boxes — focusable, named, and read out in full by `app.js` — because every title in here is clipped to a pixel budget. |
 | `static/index.html` | The whole page skeleton; every panel is an empty `<div id=…>`. |
 | `static/app.js` | Fetch, state, and all rendering. Vanilla JS, no framework. |
 | `static/app.css` | Themes via `:root` custom properties + `:root[data-theme="light"]`. |

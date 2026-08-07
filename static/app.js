@@ -1007,9 +1007,99 @@ function renderCoverage(m) {
    built here. graph.py draws the epic trees and the blocks graph as SVG and escapes
    every bead title on the way out — read the note at the top of that file before
    touching this, because assigning it through innerHTML is what makes that escaping
-   load-bearing rather than decorative. Nothing below interpolates a bead value of its
-   own; the captions are counts, and the rig name goes through esc() like everything
-   else. */
+   load-bearing rather than decorative. The captions are counts and the rig name goes
+   through esc(); the readout below is the one part that interpolates bead values of its
+   own, and every one of them is esc()'d for the same reason.
+
+   THE READOUT IS THE RECOVERY PATH FOR EVERY CLIPPED TITLE IN A DIAGRAM. A node is a
+   box of fixed pixels and a title is however long somebody typed, so graph.py clips it
+   and hangs the whole thing off `<title>` and `aria-label`. A `<title>` is a mouse
+   tooltip and this town reads the console on a phone: no hover, no way in (gc-uu8). So
+   the nodes are controls — focus one or tap one and it is spelled out in full in a bar
+   above the diagrams, with its status, its assignee and what it is waiting on.
+
+   ONE TAB STOP PER DIAGRAM, ARROWS INSIDE IT. Twelve epics of sixty children is 720 tab
+   stops between the filter box and the lists below, which is not "keyboard accessible",
+   it is a keyboard trap with an exit. So each figure holds a single stop and the arrow
+   keys (and Home/End) walk the beads inside it — the roving-tabindex pattern, the same
+   bargain a toolbar or a grid makes. The bar says so in words, because a keyboard
+   affordance nobody is told about is not one. */
+
+const MAP_HINT = "Tap a bead in a diagram to read it in full — "
+  + "or tab into one and walk it with the arrow keys.";
+
+const readHtml = () => `<div class="fig-read" id="map-read">
+  <span class="muted">${esc(MAP_HINT)}</span></div>`;
+
+/** One node, spelled out: the whole id and the whole title, plus the things the drawing
+    says in shape and colour. Falls back to the node's own `<title>` — which carries the
+    same two strings — for a bead the current filter's model cannot resolve. */
+function paintRead(node) {
+  const box = $("#map-read");
+  if (!box) return;
+  const m = backlogModel(state.brig);
+  const b = m.byId.get(node.dataset.node);
+  box.classList.add("is-on");
+  if (!b) {
+    box.textContent = node.querySelector("title")?.textContent || node.dataset.node || "";
+    return;
+  }
+  const unmet = unmetOf(m, b);
+  box.innerHTML = `
+    <i class="dot ${beadDot(m, b)}" aria-hidden="true"></i>
+    <span class="mono">${esc(b.id)}</span>
+    <span class="fig-read-title">${esc(b.title)}</span>
+    ${b.assignee ? `<span class="muted">${esc(b.assignee)}</span>` : ""}
+    ${b.priority == null ? "" : `<span class="badge p${esc(b.priority)}">P${esc(b.priority)}</span>`}
+    <span class="badge ${isClosed(b) ? "ok" : isBlocked(m, b) ? "bad" : ""}">${
+  esc(String(b.status || "unknown").toLowerCase())}</span>
+    ${unmet.length ? `<span class="bead-blocked">blocked by ${
+  esc(unmet.map((x) => `${x.id} — ${x.title}`).join(" · "))}</span>` : ""}`;
+}
+
+/** The nodes of the diagram a node belongs to, in drawing order — which is reading
+    order in both pictures: an epic then its children down the column, and the blocks
+    graph column by column. */
+const mapNodes = (node) => $$(".gn", node.ownerSVGElement || node);
+
+/** One stop per figure. Re-run after every rewrite of #map, because the tabindex lives
+    in the markup and the markup is thrown away wholesale. */
+function mapRoving(root) {
+  $$(".fig-svg", root).forEach((svg) =>
+    $$(".gn", svg).forEach((n, i) => n.setAttribute("tabindex", i ? "-1" : "0")));
+}
+
+/** Focus follows the arrow keys, and the stop follows focus — otherwise tabbing back
+    into a diagram would land on its first bead rather than where the reader left. */
+function mapFocus(node) {
+  mapNodes(node).forEach((n) => n.setAttribute("tabindex", n === node ? "0" : "-1"));
+  paintRead(node);
+}
+
+const MAP_STEP = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 };
+
+$("#map").addEventListener("focusin", (ev) => {
+  const node = ev.target.closest?.(".gn");
+  if (node) mapFocus(node);
+});
+// Tapping is the whole point on a phone, and a tap does not focus a non-form element on
+// its own everywhere — so focus is moved by hand and focusin does the painting.
+$("#map").addEventListener("click", (ev) => {
+  const node = ev.target.closest?.(".gn");
+  if (node) node.focus();
+});
+$("#map").addEventListener("keydown", (ev) => {
+  const node = ev.target.closest?.(".gn");
+  if (!node) return;
+  if (ev.key === "Enter" || ev.key === " ") return void (ev.preventDefault(), paintRead(node));
+  const nodes = mapNodes(node);
+  const at = nodes.indexOf(node);
+  const to = MAP_STEP[ev.key] ? at + MAP_STEP[ev.key]
+    : ev.key === "Home" ? 0 : ev.key === "End" ? nodes.length - 1 : null;
+  if (to == null) return;
+  ev.preventDefault();
+  nodes[Math.max(0, Math.min(nodes.length - 1, to))].focus();
+});
 
 const LEGEND = [["g-open", "open"], ["g-live", "in flight"], ["g-block", "blocked"],
   ["g-done", "closed"], ["g-cross", "leaves its epic"]];
@@ -1066,15 +1156,21 @@ function renderMap(m) {
     : trees.length === total ? `${total} open epic${total === 1 ? "" : "s"}`
       : `${trees.length} of ${total} open epics`;
   const drawn = blocks.join("") + trees.join("");
-  const html = drawn ? legendHtml() + drawn
+  const html = drawn ? readHtml() + legendHtml() + drawn
     : empty(total ? "Nothing in the map matches that filter"
       : "Nothing here has children or dependencies to draw");
   // These are the largest subtrees on the page and they scroll sideways inside their
   // own boxes, so rewriting them on every 8s poll would throw away the operator's
   // scroll position mid-read. The pictures only change when the backlog read does.
   if (html !== state.mapHtml) {
+    // A rewrite is rare, but it must not drop the reader out of the diagram they are
+    // reading — the same bargain the bead rows below make with document.activeElement.
+    const focused = document.activeElement?.dataset?.node;
     state.mapHtml = html;
-    $("#map").innerHTML = html;
+    const el = $("#map");
+    el.innerHTML = html;
+    mapRoving(el);
+    if (focused) $$("#map .gn").find((n) => n.dataset.node === focused)?.focus();
   }
 }
 
@@ -1329,11 +1425,17 @@ function boardHtml(m, lanes, cols) {
   const style = `--bn:${cols.length}`;
   // The column rule is coloured off the same allowlist the distribution bars use — the
   // value lands inside a style attribute, so it is never data-derived.
+  // The hint is printed, not hung off `title=`: what "hooked" means is the reason the
+  // column is worth reading, and a tooltip says it to a mouse and to nobody else — no
+  // phone, no keyboard, no screen reader (gc-uu8). It is one line, once, at the top of
+  // the board, which is what the Work tab's `.group-hint` already pays for its states.
   const head = `<div class="board-row board-head" style="${style}">${cols.map((c) => `
-    <div class="bcol-head" title="${esc(c.hint)}"
-         style="border-bottom-color:${STATUS_COLOR[c.key] || "var(--border)"}">
-      <span class="bcol-label">${esc(c.label)}</span>
-      <span class="bcol-n">${lanes.reduce((n, l) => n + (l.cols.get(c.key) || []).length, 0)}</span>
+    <div class="bcol-head" style="border-bottom-color:${STATUS_COLOR[c.key] || "var(--border)"}">
+      <span class="bcol-top">
+        <span class="bcol-label">${esc(c.label)}</span>
+        <span class="bcol-n">${lanes.reduce((n, l) => n + (l.cols.get(c.key) || []).length, 0)}</span>
+      </span>
+      <span class="bcol-hint">${esc(c.hint)}</span>
     </div>`).join("")}</div>`;
   const body = lanes.map((l) => {
     const collapsed = l.head && state.lanes.has(l.head.id);

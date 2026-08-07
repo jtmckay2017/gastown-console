@@ -23,16 +23,19 @@
   <div class="services" id="services"></div>
 
   <div class="topbar-actions">
-    <button id="refresh" class="btn" title="Refresh now">
-      <svg viewBox="0 0 24 24" class="ico"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
+    <!-- These three lose their labels on a phone (.btn-label), so they carry their names
+         in aria-label rather than leaning on `title=` — a tooltip is a mouse affordance
+         and the phone is where the label is gone. -->
+    <button id="refresh" class="btn" title="Refresh now" aria-label="Refresh now">
+      <svg viewBox="0 0 24 24" class="ico" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
       <span class="btn-label">Refresh</span>
     </button>
     <label class="toggle" title="Auto-refresh every 8 seconds">
       <input type="checkbox" id="auto" checked><span class="track"></span>
       <span class="toggle-label">Auto</span>
     </label>
-    <button id="theme" class="btn icon-only" title="Toggle theme">
-      <svg viewBox="0 0 24 24" class="ico"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+    <button id="theme" class="btn icon-only" title="Toggle theme" aria-label="Toggle light and dark theme">
+      <svg viewBox="0 0 24 24" class="ico" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
     </button>
   </div>
 </header>
@@ -209,8 +212,8 @@
           <span>Message</span>
           <div class="textarea-wrap">
             <textarea id="m-body" rows="6" placeholder="Dictate with the mic, or use your keyboard's dictation key…"></textarea>
-            <button id="mic" class="mic" title="Dictate">
-              <svg viewBox="0 0 24 24" class="ico"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4"/></svg>
+            <button id="mic" class="mic" title="Dictate" aria-label="Dictate the message">
+              <svg viewBox="0 0 24 24" class="ico" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4"/></svg>
             </button>
           </div>
         </label>

@@ -53,6 +53,13 @@ body {
 
 h1, h2, h3 { font-size: 1rem; font-weight: 600; letter-spacing: -.01em; }
 button, input, select, textarea { font: inherit; color: inherit; }
+
+/* Every focusable thing on the page gets a visible ring, whether or not somebody
+   remembered to style it — chips, tabs, the theme button, a card's link. The rules
+   further down that use `outline-offset: -3px` are tighter selectors and still win;
+   this is the floor, not the design. A control that is reachable by keyboard but not
+   *visible* when it is reached is reachable only in principle. */
+:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .muted { color: var(--muted); }
 .mono { font-family: var(--mono); font-size: .82em; letter-spacing: -.01em; }
 .ico { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
@@ -68,9 +75,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .brand-mark { font-size: 20px; line-height: 1; }
-.brand-text { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
+/* The town's own path, which is data and can be any length. Bounded rather than clipped
+   — it wraps inside the box instead of ending in an ellipsis nobody can open. */
+.brand-text { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; max-width: min(46vw, 280px); }
 .brand-text strong { font-size: 14px; letter-spacing: -.02em; }
-.brand-text span { font-size: 11.5px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brand-text span { font-size: 11.5px; font-family: var(--mono); overflow-wrap: anywhere; }
 
 .services { display: flex; gap: 6px; flex: 1; min-width: 0; overflow: hidden; }
 .svc {
@@ -179,7 +188,11 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 .row-card:hover { border-color: var(--faint); }
 .row-main { min-width: 0; flex: 1; }
 .row-side { display: flex; align-items: center; gap: 8px; flex: none; }
-.title { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A row's title is the payload, so it wraps rather than ending in an ellipsis: it used
+   to clip on anything wider than a phone, which meant the one thing a row exists to say
+   was the one thing you could not finish reading (gc-uu8). `.wrap` is kept because the
+   markup says it and it costs nothing, but nothing here clips any more. */
+.title { font-weight: 550; overflow-wrap: anywhere; }
 .title.wrap { white-space: normal; }
 .sub { color: var(--muted); font-size: 12px; margin-top: 2px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 
@@ -239,19 +252,18 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 .agent.is-staged { border-color: color-mix(in srgb, var(--yellow) 50%, transparent); }
 
 /* One line of the agent's own screen — what it is doing, or what is sitting unsent.
-   Truncated hard: it is agent-authored prose and will happily fill the row. */
+   The server clips it to 180 characters (panes.CLIP) and it wraps here rather than
+   being clipped a second time by a box: two of these lines is a row a little taller,
+   and half a sentence about what an agent is doing is worth nothing. */
 .agent-note {
   display: block; margin-top: 4px; font-size: 12px; color: var(--muted);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 .agent.is-staged .agent-note { color: var(--yellow); }
 
 /* The bead the agent is holding. Louder than the pane note above it — the note is
    flavour, this is the answer — and prefixed so it cannot be mistaken for one. */
-.agent-work {
-  display: block; margin-top: 4px; font-size: 12px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
+.agent-work { display: block; margin-top: 4px; font-size: 12px; overflow-wrap: anywhere; }
 .agent-work::before { content: "on "; color: var(--faint); }
 
 .chev { color: var(--faint); transition: transform .15s; }
@@ -265,8 +277,11 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 }
 .detail-item { min-width: 0; }
 .detail-item dt { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
-.detail-item dd { margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.detail-item dd.wrap { white-space: normal; overflow-wrap: anywhere; }
+/* Every field in an expansion wraps. A detail panel is where somebody went looking for
+   the whole value, so clipping one there is clipping the answer to the question the
+   expansion was opened to ask. */
+.detail-item dd { margin-top: 2px; overflow-wrap: anywhere; }
+.detail-item dd.wrap { white-space: normal; }
 
 /* ---------- watching a terminal ---------- */
 /* The row is itself a <button>, and buttons do not nest — so the terminal control
@@ -306,12 +321,13 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
   padding: 9px 12px 11px; font-size: 12px; color: var(--muted);
 }
 /* The other half of the answer: the command to attach for real, as text to select or
-   copy. The console never runs it — there is no shell passthrough here by design. */
+   copy. The console never runs it — there is no shell passthrough here by design. It
+   wraps rather than clipping: a command you cannot read to the end is one you have to
+   trust the Copy button about, and a socket path is exactly the part that got clipped. */
 .watch-cmd {
   margin-left: auto; min-width: 0; padding: 3px 7px;
   background: var(--surface-3); border: 1px solid var(--border); border-radius: 5px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text);
-  user-select: all;
+  color: var(--text); overflow-wrap: anywhere; user-select: all;
 }
 .watch-foot .btn { padding: 4px 9px; font-size: 12px; }
 
@@ -329,11 +345,9 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
   box-shadow: inset 3px 0 0 var(--blue), var(--shadow);
 }
 /* What the agent holding this bead is doing right now. Agent-authored text reaches
-   this line through panes.py, so it is clipped by the server and escaped here. */
-.flight-live {
-  margin-top: 4px; font-size: 12px; color: var(--muted);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
+   this line through panes.py, so it is clipped by the server (to panes.CLIP) and
+   escaped here — and wraps rather than being clipped again by the row. */
+.flight-live { margin-top: 4px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .flight.is-live .flight-live { color: var(--blue); }
 
 .convoy .bar-track { display: block; margin-top: 9px; }
@@ -363,13 +377,16 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 .bead-trunc { padding: 4px 8px 8px; font-size: 11.5px; color: var(--faint); }
 
 /* What this bead is waiting on — the second half of "blocked", and the reason the
-   section exists. Red, on the row, and truncated because it names other beads' titles. */
+   section exists. Red, on the row, and wrapped: it names other beads by title, and the
+   id of the bead in the way is the part that used to fall off the end. */
 .bead-blocked-line {
   display: block; margin-top: 4px; font-size: 12px; color: var(--red);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 .bead-blocked { color: var(--red); }
-/* Why it closed, one line of it, on the row — the rest is under the fold. */
+/* Why it closed, one line of it, on the row. This one keeps its clip, because it has a
+   recovery path that a tooltip is not: the row is a button, and the whole reason is
+   under the fold in `.bead-text` — reachable by tap and by keyboard alike. */
 .bead-reason {
   display: block; margin-top: 4px; font-size: 12px; color: var(--muted);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -378,10 +395,9 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 /* The distribution bars carry a word, not a P-badge, so the first column is wider than
    the priority histogram's and the label is plain text. */
 .bar.wide { grid-template-columns: minmax(0, 88px) 1fr 34px; }
-.bar-label {
-  font-size: 12px; color: var(--muted);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
+/* A status or a type, and `bd` will take any word for either — so the label wraps
+   inside its column rather than clipping a status this console has never heard of. */
+.bar-label { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 
 /* ---------- the backlog map ----------
 
@@ -403,6 +419,21 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 .fig-scroll { overflow-x: auto; overflow-y: hidden; padding: 12px; overscroll-behavior-x: contain; }
 .fig-svg { display: block; }
 
+/* The readout: the whole title of whichever bead is focused or tapped, and the only way
+   a clipped one is readable without a mouse (gc-uu8). Sticky under the two bars above
+   it, because the tallest epic tree is several screens long and a readout you have to
+   scroll back to is a readout you stop using. It sits outside `.fig` on purpose —
+   `overflow: hidden` there would make a sticky child stick to nothing. */
+.fig-read {
+  position: sticky; top: 104px; z-index: 2;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 9px;
+  padding: 8px 11px; font-size: 12.5px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow);
+}
+.fig-read.is-on { border-color: var(--accent); }
+.fig-read-title { min-width: 0; font-weight: 550; overflow-wrap: anywhere; }
+
 .fig-key { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 2px 4px; font-size: 12px; color: var(--muted); }
 .key { display: inline-flex; align-items: center; gap: 6px; }
 .key::before { content: ""; width: 11px; height: 11px; border-radius: 3px; border: 1.4px solid var(--faint); background: var(--surface-3); }
@@ -413,7 +444,17 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 .key.g-cross::before { width: 16px; height: 0; border-radius: 0; border: 0; border-top: 2px dashed var(--purple); }
 
 /* Nodes. Status is carried by outline colour *and* by shape — blocked is dashed and
-   flagged — because colour alone is not a distinction every reader can make. */
+   flagged — because colour alone is not a distinction every reader can make.
+
+   Each one is also a control (graph.py): tap it or focus it and the readout above the
+   diagram spells it out. The focus ring is stated twice on purpose — an outline, which
+   modern browsers draw on SVG elements, and a thicker stroke on the box itself, which
+   every browser draws. Only the width and the colour change, so a blocked node keeps
+   its dashes and its flag while it has focus. */
+.gn { cursor: pointer; }
+.gn:focus { outline: none; }
+.gn:focus rect { stroke: var(--accent); stroke-width: 2.6; }
+.gn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .gn text { font-size: 11.5px; fill: var(--text); }
 .gn .gi { font-family: var(--mono); font-size: 10.5px; fill: var(--muted); }
 .gn .gx { font-size: 10.5px; font-family: var(--mono); fill: var(--red); }
@@ -470,7 +511,12 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
   display: flex; align-items: center; gap: 8px; flex: 1; min-width: 220px;
   padding: 8px 11px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
-.search:focus-within { border-color: var(--blue); }
+/* The input inside drops its own outline, so the box it sits in wears the focus ring —
+   and wears it as a ring rather than as a colour, because a border that only changes
+   hue says nothing to a reader who cannot tell the two hues apart. */
+.search:focus-within {
+  border-color: var(--blue); box-shadow: 0 0 0 2px color-mix(in srgb, var(--blue) 30%, transparent);
+}
 .search .ico { color: var(--faint); }
 .search input { flex: 1; border: 0; background: none; outline: none; min-width: 0; }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -504,7 +550,10 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
   padding: 9px 11px; background: var(--surface-2); border: 1px solid var(--border);
   border-radius: var(--radius-sm); outline: none; width: 100%; resize: vertical;
 }
-.field input:focus, .field select:focus, .field textarea:focus { border-color: var(--blue); background: var(--surface); }
+.field input:focus, .field select:focus, .field textarea:focus {
+  border-color: var(--blue); background: var(--surface);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--blue) 30%, transparent);
+}
 .textarea-wrap { position: relative; }
 .mic {
   position: absolute; right: 8px; bottom: 8px; width: 34px; height: 34px;
@@ -560,9 +609,13 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 /* The heading row is not inside a lane, so it has to pay the lane's border and padding
    itself or its tracks would sit 11px left of every cell they name. */
 .board-head { padding-inline: 11px; }
-.bcol-head { display: flex; align-items: baseline; gap: 8px; padding: 4px 10px 6px; border-bottom: 2px solid var(--border); }
+.bcol-head { display: flex; flex-direction: column; gap: 2px; padding: 4px 10px 6px; border-bottom: 2px solid var(--border); }
+.bcol-top { display: flex; align-items: baseline; gap: 8px; }
 .bcol-label { font-size: 11.5px; font-weight: 650; text-transform: uppercase; letter-spacing: .06em; }
 .bcol-n { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--faint); font-size: 12px; }
+/* What the column means, on the page rather than under a hover — the same bargain the
+   Work tab's `.group-hint` makes. It wraps: these are sentences and a column is 200px. */
+.bcol-hint { font-size: 11px; line-height: 1.3; color: var(--faint); overflow-wrap: anywhere; }
 
 /* A lane is a whole plan, so it gets a card's border rather than a rule — at six lanes
    down a page, "where does this epic end" has to be answerable at a glance. */
@@ -581,6 +634,10 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 .lane-toggle[aria-expanded="true"] .chev { transform: rotate(90deg); }
 .lane-head.is-on { background: color-mix(in srgb, var(--blue) 12%, var(--surface-2)); box-shadow: inset 2px 0 0 var(--blue); }
 .lane-main { min-width: 0; display: block; }
+/* Clipped, and allowed to be: the bar it sits in is sticky over a scrolling board, so a
+   wrapping epic title would change the height of the thing everything else is measured
+   against. The recovery path is the control itself — the lane head is a button, and it
+   opens the pane, where the same title wraps in full (`.pane-title`). */
 .lane-title { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lane-bar-track { display: block; width: 160px; margin-top: 7px; }
 .lane-loose { padding: 10px 12px; font-size: 12.5px; }
@@ -608,11 +665,15 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
   background: color-mix(in srgb, var(--purple) 14%, transparent);
   border: 1px solid color-mix(in srgb, var(--purple) 45%, transparent);
 }
+/* Three lines, then a clamp — a column is 200px wide and a card that grew to fit any
+   title would make one bead as tall as the six beside it. The recovery path is the card:
+   it is a button, it opens the pane, and the pane wraps the title whole. */
 .bcard-title {
   font-size: 13px; font-weight: 550; line-height: 1.35; overflow: hidden;
   display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical;
 }
 .bcard-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--muted); font-size: 11.5px; }
+/* Same bargain: an agent address is long and the pane states it in full under Assignee. */
 .bcard-who { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bcard-kids { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 /* The whole point of the blocked column, on the card: what is holding it. Wrapped
@@ -660,6 +721,8 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 .pane-link:focus-visible { outline: 2px solid var(--blue); outline-offset: -3px; }
 .pane-link.is-flat { cursor: default; color: var(--muted); }
 .pane-link-main { min-width: 0; flex: 1; display: block; }
+/* One line, because these are a list of pointers rather than the thing being read — and
+   every one of them is a button that opens that bead in this same pane, title and all. */
 .pane-link-title { display: block; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The prose blocks are the reason the pane is a pane. They are not clipped by the
    server here (backlog.py sends them whole), so they get room and their own scroll. */
@@ -681,7 +744,9 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
   .services { order: 3; width: 100%; flex: 1 0 100%; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
   .services::-webkit-scrollbar { display: none; }
   .btn-label { display: none; }
-  .btn { padding: 7px; }
+  /* An icon button with its label hidden is the smallest control on the page — keep it
+     a thumb's worth of target rather than a cursor's. */
+  .btn { padding: 9px; }
   .toggle-label { display: none; }
   .tabs { top: 0; position: sticky; }
   main { padding: 14px 12px 24px; }
@@ -690,7 +755,10 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
   .kpis { grid-template-columns: repeat(2, 1fr); gap: 8px; }
   .kpi-value { font-size: 22px; }
   .row { padding: 11px 12px; gap: 10px; }
-  .title { white-space: normal; }
+  /* Thumbs, not cursors: a filter chip is a real tap target on the device this town is
+     actually read on. Rows already grow below; these are the smallest controls left. */
+  .chip { padding: 8px 13px; }
+  .bcol-more { padding: 9px 6px; }
   .field.narrow { flex: 1 1 46%; }
   .scroll-y { max-height: 260px; }
   /* The whole row is the expand affordance — keep it a comfortable thumb target,
@@ -718,6 +786,11 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
      can and takes the rest as a sideways scroll of its own. */
   .fig-scroll { padding: 10px 8px; }
   .fig-head { padding: 9px 10px; }
+  /* The top bar takes two rows at this width (the services wrap to their own line) and
+     it is 92px of sticky, painted over everything below it — so the readout parks under
+     that rather than under the tab strip's 44. Measured, not guessed; if the bar ever
+     grows a third row, this number moves with it. */
+  .fig-read { top: 96px; }
   /* The board keeps its columns and takes the sideways scroll, for the same reason the
      diagrams keep their pixel size: six columns folded into 360px is a different
      picture, not a smaller one. Cards get a touch narrower and lose a line of title. */

@@ -30,6 +30,19 @@ scrubbed, then `html.escape` with quotes — and the tag set is closed and writt
 here: `svg g rect path text title`. No script, no event handler, no `foreignObject`, no
 external reference, nothing whose content is a URL. Adding a tag to that list means
 re-reading this paragraph first. SVG text is an injection surface exactly like HTML is.
+The attribute set is closed the same way, and two of them carry bead data —
+`aria-label` and `data-node` — which is why `_txt()` escapes quotes as well as angle
+brackets: an attribute is a string context, not a text one.
+
+WHY THE NODES ARE FOCUSABLE. Every title here is clipped to a pixel budget, so the box
+shows as much of it as fits and nothing more. `<title>` gives that back to a mouse and
+to nobody else — not to a phone, which has no hover, and not to a keyboard (gc-uu8). So
+each node is a real control: `tabindex` (roving, managed in `app.js`), `role="button"`,
+and an `aria-label` carrying the WHOLE title plus the facts the drawing states in shape
+and colour rather than in words. Focusing or tapping one reads it out in full above the
+diagram — see `paintRead()` in `app.js`. The `<svg>` is `role="group"`, not `role="img"`:
+an image's children are presentational, which would hide every one of these controls
+from a screen reader.
 
 SIZE. This rides the heaviest panel in the console on every snapshot, so it is capped
 hard (MAX_EPICS, MAX_NODES) and drawn in the fewest elements that will do — one path
@@ -68,7 +81,8 @@ ARC_MIN = 14     # how far the shallowest dependency arc bows into the gutter
 # here and three here are twice that, and an ellipsized id is worse than useless — it is
 # the string the reader is about to search for. Every box grows by whatever the column
 # takes beyond ID_W so the titles keep their room, and ID_MAX stops one pathological id
-# from widening a whole diagram (it keeps its `<title>` tooltip).
+# from widening a whole diagram — that one clips, and comes back whole when its node is
+# focused or tapped, like every clipped title here.
 ID_W = 62
 ID_MAX = 172
 
@@ -140,11 +154,28 @@ def _id_w(rows):
     return max(ID_W, min(ID_MAX, int(longest * PX_MONO) + 10))
 
 
+def _aria(bead, cls, label):
+    """A node's accessible name: the WHOLE title — never the clipped one — and then the
+    things the box says in shape and colour rather than in words. A reader who cannot see
+    the dashed outline and the red flag has to be told "blocked" in a word instead, and a
+    reader who can see them still has to be told which of a hundred boxes has focus."""
+    bits = [f'{bead.get("id")}: {" ".join(str(bead.get("title") or "").split())}']
+    status = str(bead.get("status") or "").strip().lower()
+    if status:
+        bits.append(status)
+    if cls == "g-block" and status != "blocked":
+        bits.append("blocked")
+    if label:
+        bits.append("waiting on " + label.replace("↤", "").strip())
+    return _txt(" — ".join(bits))
+
+
 def _node(x, y, w, cls, bead, idw=ID_W, label="", h=ROW_H, ty=None):
-    """One bead as a box. The group carries the position so nothing inside it needs
-    coordinates that depend on where it landed, which is most of why this is compact.
-    `<title>` is the browser's own tooltip — the whole title, for the ones clipped to
-    fit, with no hover machinery in the front end to go with it.
+    """One bead as a box, and one control. The group carries the position so nothing
+    inside it needs coordinates that depend on where it landed, which is most of why this
+    is compact. `<title>` is the browser's own tooltip — the whole title, for the ones
+    clipped to fit — and `aria-label` is the same string for everybody a tooltip never
+    reaches, which is why the group is focusable at all (see the note at the top).
 
     Nothing here can measure text, so everything that shares the box takes its width out
     of the title's budget first. A title that stops early is fine; a title that runs
@@ -153,7 +184,9 @@ def _node(x, y, w, cls, bead, idw=ID_W, label="", h=ROW_H, ty=None):
     flag = 20 if cls == "g-block" else 0
     tail = len(label) * PX_SANS + 6 if label else 0
     base = h / 2 + 4 if ty is None else ty
-    parts = [f'<g class="gn {cls}" transform="translate({x},{y})">',
+    parts = [f'<g class="gn {cls}" transform="translate({x},{y})" role="button" '
+             f'tabindex="-1" data-node="{_txt(bead.get("id"))}" '
+             f'aria-label="{_aria(bead, cls, label)}">',
              f'<title>{_txt(bead.get("id"))} · {_txt(title)}</title>',
              f'<rect width="{w}" height="{h}" rx="5"/>',
              f'<text class="gi" x="8" y="{base:g}">{_fit(bead.get("id"), idw - 8, PX_MONO)}</text>',
@@ -171,8 +204,11 @@ def _node(x, y, w, cls, bead, idw=ID_W, label="", h=ROW_H, ty=None):
 
 
 def _svg(w, h, body, label):
+    # role="group", not role="img": the nodes inside are focusable controls, and an
+    # image's children are presentational — the role that summarised the picture best
+    # would have hidden every bead in it from a screen reader.
     return (f'<svg class="fig-svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" '
-            f'xmlns="http://www.w3.org/2000/svg" role="img" aria-label="{_txt(label)}">'
+            f'xmlns="http://www.w3.org/2000/svg" role="group" aria-label="{_txt(label)}">'
             f'{body}</svg>')
 
 
