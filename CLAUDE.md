@@ -166,14 +166,26 @@ unfinished feature.
 | `bead-link` | `bd dep add`, or `bd update --parent` | `edit.py` | anywhere |
 | `dispatch` | `bd comment`, then `gt sling` | `dispatch.py` | **the loopback only** |
 
-Two *surfaces* now open these forms — the Board tab's pane and the Plans tab — and that
-is a front-end fact, not a fifth and sixth endpoint. `HOSTS` in `app.js` is the whole of
-the difference between them (which element the form paints into, what repaints around
-it, which bead it opens on); everything below it — what is sent, what a conflict is, how
-a refusal is spoken — is one implementation that does not know which tab it is on. Keep
-it that way: a second copy of the conflict handling is a second thing to get wrong about
-somebody else's writing. `dispatch` is reachable from the Board's pane only, because
-approving a plan and reading one are different acts and only one of them starts an agent.
+Two *surfaces* open these forms — the Board tab's pane and the Plans tab — and that is a
+front-end fact, not a fifth and sixth endpoint. `HOSTS` in `app.js` is the whole of the
+difference between them (which element the form paints into, what repaints around it,
+which bead it opens on, and the words on its four buttons); everything below it — what is
+sent, what a conflict is, how a refusal is spoken — is one implementation that does not
+know which tab it is on. Keep it that way: a second copy of the conflict handling is a
+second thing to get wrong about somebody else's writing.
+
+**All five writes are on both surfaces, `dispatch` included** (gc-d6t), out of one block —
+`beadActs()`. gc-e71 left the approval on the Board only, on the reasoning that approving
+a plan and reading one are different acts; the operator used it and said otherwise: "i
+should be able to send for approval from the plans tab right?" They are right, and the
+scoping was the error. The whole gate is *that a human read the plan*, and the Plans tab
+is where a plan gets read — leaving the button on the other tab put the decision one tab
+away from the reading it depends on, and made the operator re-find the card to act on what
+they had just finished reading. It is placement and not capability: same endpoint, same
+four guards, and the control is still a form rather than a fire, because the plan has to
+be read on the way through. On Plans that form does not redraw the plan — the document
+above it *is* the pinned copy, held still for the life of the form — but it does name any
+part of the plan that is empty, which the document cannot, since it draws what is written.
 
 **What is deliberately absent is as much of the design as what is there.** There is no delete,
 no close, no status change and no unlink — and no pause, resume or clear on the scheduler
@@ -319,11 +331,12 @@ Other things not to erode:
 | `static/index.html` | The whole page skeleton; every panel is an empty `<div id=…>`. The one exception to "static" is `<meta name="gt-dispatch">`, which the server fills in — see `_page()`. |
 
 The **Plans tab** is the one view that is a document rather than a panel. It draws the same
-`backlog` panel and the same `GET /api/bead` the Board's pane does, and opens the same two
-forms; what it adds is a measure a three-thousand-character plan can be read at, a renderer
-for the structure inside it, and a beat that says when an agent revised it mid-read (gc-e71).
-Diagrams in a plan are deliberately still out of scope — every renderer for one is a
-dependency, and that is a decision the operator has not made.
+`backlog` panel and the same `GET /api/bead` the Board's pane does, and opens the same
+forms — all of them, approval included (gc-d6t); what it adds is a measure a
+three-thousand-character plan can be read at, a renderer for the structure inside it, and a
+beat that says when an agent revised it mid-read (gc-e71). Diagrams in a plan are
+deliberately still out of scope — every renderer for one is a dependency, and that is a
+decision the operator has not made.
 
 **It opens on the plans that are not closed, and that default is the feature** (gc-6z8). A
 town finishes most of what it plans — nineteen plans, two of them live, the first time this
@@ -337,6 +350,12 @@ number above the rows is never the whole answer. Note what this tab does *not* b
 `workLane()`'s "being worked" substitution belongs to the two surfaces that ask what is
 happening right now, and a derived lane here would be a third spelling of a bead's state on a
 tab that asks what was written down.
+
+**And the reading finishes with a decision, on this tab** (gc-d6t). The four things that can
+be done to a bead — edit it, link it, mail an agent about it, approve it and sling it — are
+one block (`beadActs()`) drawn identically here and on the Board's pane, so neither tab can
+quietly grow a capability the other one lacks. `HOSTS[…].acts` is the only difference and it
+is only the wording.
 | `static/app.js` | Fetch, state, and all rendering. Vanilla JS, no framework. Seven lists drill a row down into the rest of what its read already carried; the shared half of that is the "expandable detail" section near the top — `state.open`, `expandRow()`, `detailGrid()`, `prose()`, `paint()`, `expander()`. Expansion keys are namespaced per panel, because one flat set would let a mail id and a rig name mean the same row. It also carries the console's **one renderer** — `planBlocks()`/`planHtml()` in the "plans" section, which turns an agent's `design` field into headings, lists and preformatted blocks. It is hand-rolled and stays hand-rolled (a markdown dependency breaks constraint 1) and it stays on the *client* (a second server-side markup generator is what `graph.py`'s header asks not to have). It escapes every string before it adds a tag, and the only inline rule runs on the escaped text. |
 | `static/app.css` | Themes via `:root` custom properties + `:root[data-theme="light"]`. |
 | `start.sh` | Restart helper; `--lan` binds `0.0.0.0` and prints a tokenized URL. |

@@ -924,6 +924,10 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 /* An empty half of a plan is drawn rather than dropped: "nothing is written here" is the
    most important thing this form can tell somebody about to start an agent. */
 .plan-text.is-blank { color: var(--muted); font-style: italic; }
+/* ...and on the Plans tab the plan is already on the page at full measure, so the form
+   points at it instead of drawing a second copy — see planAbove(). Two sentences rather
+   than a field, so they get their own spacing. */
+.plan-above { display: flex; flex-direction: column; gap: 9px; }
 .refuse-list { margin: 7px 0 0 18px; font-size: 12.5px; line-height: 1.55; }
 .refuse-list li { margin-top: 4px; }
 /* The way out of a refused approval sits inside the refusal, not down in the foot beside
@@ -983,7 +987,10 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
   margin-top: 8px; color: var(--muted); font-size: 12.5px;
 }
-.plan-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+/* The Board's pane and this header draw the same block from the same function (beadActs
+   — gc-d6t), so it is the same `.pane-acts` here, sized for the room it has rather than
+   restyled: a second class would be a second place for the two tabs to drift apart in. */
+.plan-head .pane-acts { gap: 8px; margin-top: 12px; }
 /* An agent rewrote the thing being read. It is a beat, not an alert — nothing has gone
    wrong — but it does not fade, does not time out, and says which fields moved. */
 .plan-beat {
@@ -1163,7 +1170,9 @@ h6.pl-h { font-size: 12.5px; color: var(--muted); }
   .plans-index { max-height: 46vh; padding: 10px 8px 8px; }
   .plan-row { min-height: 56px; }
   .plan-title { font-size: 19px; }
-  .plan-acts .btn { flex: 1 1 46%; justify-content: center; }
+  /* Two by two rather than four in a stack: with the approval on the end this block is
+     four controls wide, and the plan under it is what the phone is here to read. */
+  .plan-head .pane-acts .btn { flex: 1 1 46%; justify-content: center; }
   .pl-p { font-size: 14.5px; }
   .pl-mark { min-width: 1.8em; }
   .pl-item { gap: 8px; }

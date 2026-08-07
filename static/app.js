@@ -2121,20 +2121,7 @@ function paneHtml(m) {
       <h3 class="pane-title">${esc(b.title)}</h3>
       <div class="pane-id"><span class="mono">${esc(b.id)}</span>
         ${b.plan ? '<span class="bcard-plan">plan</span>' : ""}</div>
-      <!-- Always live, never disabled-with-a-tooltip: a control that greys out for a beat
-           and explains itself only on hover explains itself to a mouse and to nobody else
-           (gc-uu8). If the prose has not landed yet, openForm() says so in words. -->
-      <div class="pane-acts">
-        <button type="button" class="btn small" data-form="edit">Edit</button>
-        <button type="button" class="btn small" data-form="link">Link</button>
-        <button type="button" class="btn small" data-form="mail">Send to an agent</button>
-        <!-- Last, and only on a console bound to this machine — see CAN_DISPATCH. It is
-             the one control here that starts something, so it sits apart from the three
-             that describe things, and it opens a form rather than firing: the plan has
-             to be read on the way through. -->
-        ${CAN_DISPATCH ? '<button type="button" class="btn small go" data-form="dispatch">'
-    + "Approve &amp; dispatch</button>" : ""}
-      </div>
+      ${beadActs("board")}
       <dl class="agent-detail pane-fields">${fields.map(([k, v]) =>
     `<div class="detail-item"><dt>${esc(k)}</dt><dd class="wrap">${esc(v)}</dd></div>`).join("")}</dl>
       ${paneRefs(m, "Blocked by", "must land first", stuck)}
@@ -2297,7 +2284,11 @@ const CAN_DISPATCH = $('meta[name="gt-dispatch"]')?.content === "on";
    The selections are deliberately SEPARATE rather than shared. Opening a card on the
    board to see what is blocking it must not move what somebody is reading on Plans, and
    the board's pane toggles shut when you press the same card twice, which is exactly the
-   wrong gesture for an index of documents. */
+   wrong gesture for an index of documents.
+
+   `acts` is the last of those disagreements and the smallest: the same four controls in
+   the same order, named for where they are. The Board's pane opens on any card, so its
+   words are about a bead; the Plans tab is already looking at one plan and says so. */
 const HOSTS = {
   board: {
     el: "#board-pane",
@@ -2307,6 +2298,7 @@ const HOSTS = {
     rig: () => (state.boardRig !== "all" ? state.boardRig : ""),
     land: (sel, data) => { state.sel = sel; state.selData = data; },
     say: (msg, bad) => { state.paneNote = msg; state.paneBad = bad; },
+    acts: { edit: "Edit", link: "Link", mail: "Send to an agent" },
   },
   plans: {
     el: "#plans-form",
@@ -2324,10 +2316,44 @@ const HOSTS = {
       state.planLanded = backlogLanded();
     },
     say: (msg, bad) => { state.planNote = msg; state.planBad = bad; },
+    acts: { edit: "Edit this plan", link: "Link", mail: "Send feedback to an agent" },
   },
 };
 const hostOf = (name) => HOSTS[name] || HOSTS.board;
 const formHost = () => hostOf(state.form && state.form.host);
+
+/* The three writes that DESCRIBE a bead, in the order they are offered. Approving is not
+   in the list because it does not belong beside them — see below. */
+const BEAD_ACTS = ["edit", "link", "mail"];
+
+/** Everything that can be done to the bead on screen, as one block for both surfaces.
+    ONE implementation and not two (gc-d6t): the Board's pane and the Plans tab are two
+    windows onto the same bead and the same five writes, and a second copy of this block
+    is how they start disagreeing about what is possible — the operator learns a control
+    on one tab and finds it missing on the other, which is what happened here.
+
+    It was the Plans tab that was missing the approval, and the operator said so: they
+    read a plan at full width, decided it was good, and then had to go to the Board and
+    find the card again to act on it. The decision belongs where the reading finishes.
+
+    Always live, never disabled-with-a-tooltip: a control that greys out for a beat and
+    explains itself only on hover explains itself to a mouse and to nobody else (gc-uu8).
+    If the prose has not landed yet, openForm() says so in words. */
+function beadActs(hostName) {
+  const words = hostOf(hostName).acts;
+  return `<div class="pane-acts">
+    ${BEAD_ACTS.map((kind) => `<button type="button" class="btn small"
+      data-form="${esc(kind)}">${esc(words[kind])}</button>`).join("")}
+    <!-- Last, and only on a console bound to this machine — see CAN_DISPATCH. It is the
+         one control here that starts something, so it sits apart from the three that
+         describe things, and it opens a form rather than firing: the plan has to be read
+         on the way through. On the Plans tab that is stronger rather than weaker — the
+         plan is right there — and it is still not one press. -->
+    ${CAN_DISPATCH ? '<button type="button" class="btn small go" data-form="dispatch">'
+    + "Approve &amp; dispatch</button>" : ""}
+  </div>`;
+}
+
 /** One form at a time across the whole console, and the refusal says so wherever the
     stray click landed — including on the tab the form is NOT on, which is the case that
     would otherwise look like a dead control. */
@@ -2641,6 +2667,11 @@ function dispatchTargets(rig) {
 const targetLabel = (a) => `${a.address} — ${String(a.role || "agent")}${
   a.running ? (a.has_work ? ", holding work already" : ", idle") : ", not running"}`;
 
+/* The three fields an approval is an approval OF, in the order they are read. `notes`
+   is pinned too but is not one of these: it is the running commentary, not the plan. */
+const PIN_BLOCKS = [["design", "Proposed plan"], ["acceptance", "Acceptance criteria"],
+  ["desc", "Gathered context"]];
+
 /** One field of the plan, read-only, and drawn even when it is empty — an approval form
     that quietly omitted the empty half of the plan would be hiding exactly the thing the
     operator most needs to notice before pressing. */
@@ -2649,6 +2680,31 @@ function planBlock(label, text) {
     <span class="field-name">${esc(label)}</span>
     <div class="plan-text${text ? "" : " is-blank"}">${
   esc(text || "Nothing is written in this field.")}</div>
+  </div>`;
+}
+
+/** The plan, when it is already on the screen above this form in full — which is the
+    Plans tab, and only the Plans tab (gc-d6t).
+
+    The gate is that a human read the plan, and there it has been read: at a measure, in
+    the renderer, from `state.planData` — the same object `pinnedOf()` took the pin from,
+    and one that tab freezes for the whole life of a form. So the two cannot drift, and
+    redrawing three thousand characters inside the form would only put a second copy of
+    them on the page for the operator to scroll past. The Board's pane draws them because
+    the form takes the pane's place there and the plan would otherwise be gone.
+
+    WHAT THE DOCUMENT ABOVE DOES NOT SAY IS SAID HERE. It draws the fields that were
+    written; an approval has to name the ones that were not, because "there is no
+    acceptance criterion on this" is the most important thing this form can tell somebody
+    who is about to start an agent. */
+function planAbove(f) {
+  const blank = PIN_BLOCKS.filter(([k]) => !f.pin[k]).map(([, label]) => label);
+  return `<div class="plan-above">
+    <p class="form-hint">The plan above is what this approves, exactly as it reads now.
+      It is held still while this form is open, and the dispatch is refused if the bead
+      has moved since it was drawn.</p>
+    ${blank.length ? `<p class="form-clipped">Nothing at all is written in
+      ${esc(listWords(blank))} on this bead — approving it approves that too.</p>` : ""}
   </div>`;
 }
 
@@ -2661,17 +2717,16 @@ function dispatchForm(m, f) {
     <h3 class="pane-title">Approve this plan and dispatch it</h3>
     <div class="pane-id"><span class="mono">${esc(f.id)}</span> ${esc(b.title || "")}</div>
     <p class="form-hint">Approving spawns an agent on this bead. It will work the plan
-      below, write code and open a merge request — so read it: this is exactly what is
-      being approved, it is recorded on the bead as approved, and the dispatch is refused
-      if any of it changes before you press.</p>
+      ${f.host === "plans" ? "above" : "below"}, write code and open a merge request — so
+      read it: this is exactly what is being approved, it is recorded on the bead as
+      approved, and the dispatch is refused if any of it changes before you press.</p>
     ${short.length ? `<p class="form-clipped">The console only has part of ${
   esc(short.map((k) => FORM_LABEL[k] || k).join(" and "))} — the field is longer than one
-      response carries. What is below is that part, and that part is what gets recorded as
-      approved. Read the whole thing with <code class="mono">bd show ${esc(f.id)}</code>
+      response carries. What is on screen is that part, and that part is what gets recorded
+      as approved. Read the whole thing with <code class="mono">bd show ${esc(f.id)}</code>
       before you press.</p>` : ""}
-    ${planBlock("Proposed plan", f.pin.design)}
-    ${planBlock("Acceptance criteria", f.pin.acceptance)}
-    ${planBlock("Gathered context", f.pin.desc)}
+    ${f.host === "plans" ? planAbove(f)
+    : PIN_BLOCKS.map(([k, label]) => planBlock(label, f.pin[k])).join("")}
     ${list.length
     ? formField("target", "Send it to",
       "A fresh polecat in the rig is the usual answer. Anything else is an agent that "
@@ -2881,11 +2936,17 @@ function resolveClash(choice, i) {
 /** A refused approval, taken up again on the plan the store actually holds.
 
     The bead does not have to be fetched for this: the refusal carried every pinned field
-    as `bd` had it at the moment of the check, which is fresher than the board behind this
-    pane (a backlog read runs every three minutes). So this re-seeds the form and the
-    pane's own prose from that one answer — the plan is redrawn, the pin moves with it,
+    as `bd` had it at the moment of the check, which is fresher than the surface behind
+    this form (a backlog read runs every three minutes). So this re-seeds the form and the
+    surface's own prose from that one answer — the plan is redrawn, the pin moves with it,
     and the next press approves what is now on screen. Nothing is dispatched here; the
-    operator still has to read it and press. */
+    operator still has to read it and press.
+
+    THE SURFACE HAS TO MOVE WITH THE PIN, on both tabs and for slightly different reasons.
+    On the Board it is the pane the form will hand back to; on Plans it is the document
+    above the form, which is where the plan is being read from in the first place — a pin
+    that moved while the words above it did not would be an approval of something nobody
+    was shown. Same fields, one place, whichever tab this is. */
 function rereadForApproval() {
   const f = state.form;
   if (!f || f.kind !== "dispatch" || !f.now) return;
@@ -2895,11 +2956,16 @@ function rereadForApproval() {
   f.reasons = [];
   f.err = "";
   f.msg = "This is what the bead says now. Read it, then approve it.";
-  // The pane behind the form shows the same prose from the same fields, so it moves too:
-  // one copy of the plan on this page rather than two that can disagree about it.
-  if (state.selData && state.selData.key === selKey()) {
-    state.selData = { key: selKey(), data: { ...(state.selData.data || {}),
-      ...Object.fromEntries(FORM_PROSE.map(([k]) => [k, f.now[k] || ""])) } };
+  const h = formHost();
+  const key = key2(f.rig, f.id);
+  const had = h.data();
+  if (had && had.key === key) {
+    // land() rather than a poke at the state: on Plans it also clears the "an agent
+    // revised this" beat and re-bases the read that raises it, and being told about the
+    // revision you were just shown by a refusal is the same noise twice.
+    h.land(h.sel(), { key, data: { ...(had.data || {}), clipped: f.nowClipped || [],
+      ...Object.fromEntries(FORM_PROSE.map(([k]) => [k, f.now[k] || ""])) } });
+    h.repaint();
   }
   paintForm();
   $("#form-note")?.focus();
@@ -2976,8 +3042,8 @@ $("#board-q").oninput = (e) => { state.boardq = e.target.value.toLowerCase(); re
 // a console that can start an agent is a different thing from one that cannot, and the
 // operator should not have to open a tab to find out which one they are looking at.
 if (CAN_DISPATCH) {
-  $("#write-note").textContent = "read-only except mail, the bead editor on Board and "
-    + "Plans, and approve-and-dispatch (this machine only) — no delete";
+  $("#write-note").textContent = "read-only except mail, the bead editor, and "
+    + "approve-and-dispatch (this machine only) — on Board and Plans alike, no delete";
 }
 
 // One delegated listener over the whole tab: the board and the pane are both replaced
@@ -3035,11 +3101,22 @@ $("#view-board").addEventListener("click", (ev) => {
    putting the renderer on the server would make a second place that generates markup,
    which graph.py's header is explicit about not wanting company in.
 
-   YOU REACT TO IT WITHOUT LEAVING IT. Feedback to an agent and the operator's own edit
-   both open UNDER the plan rather than over it — this whole view exists because the plan
-   was not readable while you were working on it, and a form that replaced it would put
-   that back. Both are the existing writes: `POST /api/mail` and `bead-edit`, with
-   gc-ebv's conflict handling untouched. No new endpoint.
+   YOU REACT TO IT WITHOUT LEAVING IT. Feedback to an agent, the operator's own edit, and
+   — since gc-d6t — the approval that puts an agent on it all open UNDER the plan rather
+   than over it: this whole view exists because the plan was not readable while you were
+   working on it, and a form that replaced it would put that back. Every one of them is an
+   existing write (`POST /api/mail`, `bead-edit`, `bead-link`, `dispatch`) reached through
+   the one block the Board's pane draws — beadActs(). No new endpoint, and no second copy
+   of the conflict handling underneath them.
+
+   THE APPROVAL BELONGS HERE MOST OF ALL, which is why gc-e71 was wrong to leave it out
+   and the operator said so: "i should be able to send for approval from the plans tab
+   right?" A dispatch is gated on a human having read the plan, and this is the tab where
+   a plan gets read — sending them to the Board to find the card again put the decision
+   one tab away from the reading it depends on. All four of gc-dzd's guards are the same
+   guards: the control is not built at all off the loopback (CAN_DISPATCH), the approval
+   pins every field as it was drawn, it is recorded on the bead before anything runs, and
+   it is one at a time with a second press for a repeat.
 
    AND IT SAYS WHEN THE PLAN MOVED. Agents rewrite these beads continuously. Silent
    replacement under a reader is the failure mode, so the backlog read's landing time is
@@ -3439,13 +3516,12 @@ function plansDocHtml(m) {
         ${b.priority == null ? "" : `<span class="badge p${esc(b.priority)}">P${esc(b.priority)}</span>`}
         ${meta.map((v) => `<span>${esc(v)}</span>`).join("")}
       </div>
-      <!-- The two halves of the operator's loop, side by side and always live: ask an
-           agent to revise this, or revise it yourself. Both open below, so the plan
-           stays on screen while you write about it. -->
-      <div class="plan-acts">
-        <button type="button" class="btn small" data-form="mail">Send feedback to an agent</button>
-        <button type="button" class="btn small" data-form="edit">Edit this plan</button>
-      </div>
+      <!-- The whole of the operator's loop, always live and the same block the Board's
+           pane carries (beadActs): ask an agent to revise this, revise it yourself, or —
+           on a console bound to this machine — approve it and put an agent on it. All of
+           them open below, so the plan stays on screen while you write about it, and the
+           approval reads the plan it is approving off the same copy. -->
+      ${beadActs("plans")}
     </header>
     ${planBeat()}
     ${plansProseHtml()}`;
@@ -3638,6 +3714,7 @@ $("#view-plans").addEventListener("click", (ev) => {
   if (open) return void openForm(open.dataset.form, "plans");
   if (ev.target.closest("[data-form-cancel]")) return void closeForm();
   if (ev.target.closest("[data-form-save]")) return void submitForm();
+  if (ev.target.closest("[data-dispatch-reload]")) return void rereadForApproval();
   if (ev.target.closest("[data-plan-seen]")) return void dismissPlanChange();
   const clash = ev.target.closest("[data-clash]");
   if (clash) return void resolveClash(clash.dataset.clash, Number(clash.dataset.clashI));
