@@ -27,8 +27,10 @@ slow forever, on everyone's page at the same time. So:
   read is declared: name → (source, refresh interval). A source is normally `gt` argv; it may
   also be a callable returning `(data, error)`, for a read that is not a `gt` call at all (the
   `models` panel, see `models.py`; the `panes` panel, see `panes.py`; the `flight` and
-  `backlog` panels, see `flight.py` and `backlog.py`). Adding a read means adding a row here,
-  nowhere else — a read that does not fit the `gt`-argv shape is a callable, not a second table.
+  `backlog` panels, see `flight.py` and `backlog.py`) — or for one that is a `gt` call plus a
+  judgement about what it means (the `queue` panel, see `queued.py`). Adding a read means
+  adding a row here, nowhere else — a read that does not fit the `gt`-argv shape is a
+  callable, not a second table.
 - HTTP handlers **only read memory the scheduler filled** — never a subprocess, never a file,
   never anything that can be slow. `GET /api/snapshot` returns every panel plus its age;
   `GET /api/panel/<name>` returns one panel in the same shape — the UI uses `/api/snapshot`,
@@ -59,7 +61,10 @@ subprocesses specifically — `models.py` reads the filesystem rather than shell
 `panes.py` shells out to `tmux` rather than to `gt`, and `flight.py` shells out to `bd`; all
 three live behind the same scheduler for the same reason. `panes` costs one `capture-pane` per
 session in town and `flight` one `bd list` per beads repo, which is milliseconds each and still
-has no business on a request path. `watch` costs one `capture-pane` for each session under
+has no business on a request path. `queue` is a single `gt scheduler status`, which takes one
+to three seconds on a *quiet* town — the plainest case in the table for the rule, and a read
+whose whole job is to be trustworthy when the town is not quiet. `watch` costs one
+`capture-pane` for each session under
 lease — never more than `panes.MAX_WATCHED`, and none at all when nobody is watching, which is
 nearly always. `backlog` is the heaviest of the lot — a whole `bd list --all` per beads repo —
 which is why it runs on the slowest cadence in the table and trims hard before it caches.
@@ -160,10 +165,14 @@ unfinished feature.
 | `dispatch` | `bd comment`, then `gt sling` | `dispatch.py` | **the loopback only** |
 
 **What is deliberately absent is as much of the design as what is there.** There is no delete,
-no close, no status change and no unlink. A planning surface that can destroy a bead is a
-different risk class, and closing one is a claim about work that the console cannot verify.
-`bd`'s vocabulary is much larger than this table and the gap is the point — adding a row to it
-is a design decision that needs a human, exactly like a new endpoint is.
+no close, no status change and no unlink — and no pause, resume or clear on the scheduler
+either. A planning surface that can destroy a bead is a different risk class, and closing one
+is a claim about work that the console cannot verify. The Work tab's queue view can say in
+words why nothing is dispatching precisely *because* it cannot do anything about it: reading a
+stalled queue and restarting one are two different risk classes as well, and a scheduler
+control is not a thing that arrives as part of a diagnostic. `bd`'s vocabulary is much larger
+than this table and the gap is the point — adding a row to it is a design decision that needs a
+human, exactly like a new endpoint is.
 
 **The console can now start an agent, and that is the fifth row.** `dispatch` approves a plan
 and slings the bead, which spawns a fresh polecat that will write code and open a merge
@@ -288,10 +297,11 @@ Other things not to erode:
 | `edit.py` | The bead writes: create, edit, link. Owns what may be written, what a conflict is, and the re-read that makes "saved" mean the store agrees. Allowed to be slow on a request path, and the header says why. Its `values`/`norm`/`carried`/`done`/`no` are public because `dispatch.py` answers in the same shape — one payload shape for the pane, not two. |
 | `dispatch.py` | The fifth write, and the only one that *starts* something: approve a plan, record the approval, `gt sling`. Loopback only. Owns all four guards and its own `gt` invocation, because `gt sling` answers in prose rather than JSON and a write wants its failure text. Read its header before changing a line of it — every paragraph in there is a decision somebody already argued through. |
 | `flight.py` | The `flight` read: every bead that is neither open nor closed, and who holds it. `gt ready` drops a bead the moment it is picked up and no `gt` read carries an agent's work, so this is the only answer to "what is being worked on". One `bd list` per beads repo in town. |
+| `queued.py` | The `queue` read: what the scheduler is holding, what each item is blocked behind, and — in words — why nothing is dispatching. With deferred dispatch on, a stalled queue and a finished town draw the same blank page; this is the only thing that tells them apart, so it returns a *verdict* and the arithmetic behind it, not just a list. One `gt scheduler status --json`. Not `queue.py` (stdlib, and this directory is `sys.path[0]`) and not `dispatch.py` (the write above): this is the read that can only ever *say* why nothing is dispatching. |
 | `backlog.py` | The `backlog` read: each rig's whole backlog with its structure intact — the epic hierarchy, the `blocks` edges, and why every closed bead closed. The Work tab's reads are all about this minute; this is the one a ceremony reads. Slowest cadence, biggest payload, trimmed hardest. Also owns the prose table behind `GET /api/bead` — the four long fields, kept beside the panel rather than in it — and `apply_write()`, which folds a bead the console just wrote into that cache so a save is visible before the next read lands. |
 | `graph.py` | The same beads, drawn: epic trees and the `blocks` graph as SVG, laid out in stdlib Python. Not a read — it takes what `backlog.py` has already trimmed and rides inside that panel, so the picture and the lists beside it can never be a cadence apart. The one place markup is generated on the server, which is why it does its own escaping. Its nodes are controls rather than boxes — focusable, named, and read out in full by `app.js` — because every title in here is clipped to a pixel budget. |
 | `static/index.html` | The whole page skeleton; every panel is an empty `<div id=…>`. The one exception to "static" is `<meta name="gt-dispatch">`, which the server fills in — see `_page()`. |
-| `static/app.js` | Fetch, state, and all rendering. Vanilla JS, no framework. Six lists drill a row down into the rest of what its read already carried; the shared half of that is the "expandable detail" section near the top — `state.open`, `expandRow()`, `detailGrid()`, `prose()`, `paint()`, `expander()`. Expansion keys are namespaced per panel, because one flat set would let a mail id and a rig name mean the same row. |
+| `static/app.js` | Fetch, state, and all rendering. Vanilla JS, no framework. Seven lists drill a row down into the rest of what its read already carried; the shared half of that is the "expandable detail" section near the top — `state.open`, `expandRow()`, `detailGrid()`, `prose()`, `paint()`, `expander()`. Expansion keys are namespaced per panel, because one flat set would let a mail id and a rig name mean the same row. |
 | `static/app.css` | Themes via `:root` custom properties + `:root[data-theme="light"]`. |
 | `start.sh` | Restart helper; `--lan` binds `0.0.0.0` and prints a tokenized URL. |
 

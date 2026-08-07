@@ -88,11 +88,23 @@
       </div>
       <div class="chips" id="work-chips"></div>
     </div>
-    <!-- What is happening now, then how far along it is, then what could be next.
-         The filters above apply to all three. -->
+    <!-- What is happening now, then what is queued behind it, then how far along the
+         batch is, then what could be next. The filters above apply to all four. -->
     <div class="section">
       <h2 class="section-head">In flight <span class="muted" id="flight-count"></span></h2>
       <div id="flight" class="stack"></div>
+    </div>
+    <!-- What the scheduler is holding but has not slung, and — when nothing is moving —
+         why, in a sentence. It sits directly under In flight because that is the list
+         whose emptiness raises the question: with deferred dispatch on, a stalled queue
+         and a finished town draw exactly the same blank page, and this is the only thing
+         on the page that tells them apart. Read-only, like everything but the compose
+         box and the Board tab's editor — pausing and resuming the scheduler are writes
+         and are deliberately not here. -->
+    <div class="section">
+      <h2 class="section-head">Queue <span class="muted" id="queue-count"></span></h2>
+      <div id="queue-state"></div>
+      <div id="queue" class="stack"></div>
     </div>
     <div class="section">
       <h2 class="section-head">Convoys <span class="muted" id="convoy-count"></span></h2>

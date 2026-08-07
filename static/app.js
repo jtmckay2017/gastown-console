@@ -186,7 +186,7 @@ const loadingOf = (n) => panel(n).loading && panel(n).data == null;
 const anyLoading = () => Object.keys(state.snap?.panels || {}).some(loadingOf);
 
 /* ---------------- expandable detail ----------------
-   Six lists on this page now open a row onto the rest of what the read already carried,
+   Seven lists on this page now open a row onto the rest of what the read already carried,
    and every one of them meets the same two problems.
 
    The 8s refresh replaces a panel's markup wholesale, so <details>, a class on a node,
@@ -375,12 +375,22 @@ function renderKpis(s) {
   const blocked = inflight.filter((b) => flightState(b).key === "blocked").length;
   const convoys = (dataOf("convoys", []) || [])
     .filter((c) => String(c.status || "").toLowerCase() !== "closed").length;
+  // And the third of that pair: what is scheduled behind it. A queue that has stalled
+  // is invisible in both of the numbers above — they would read 0 and 0, which is what
+  // a finished town reads too — so the headline the read decided (see queued.py) is
+  // the sub-line here, in the same two words the Work tab's verdict box uses.
+  const q = dataOf("queue", null);
+  const scheduled = num(q?.totals?.queued);
   const cards = [
     { v: `${busy}/${agents.length}`, l: "Agents working", cls: busy ? "good" : "",
       sub: `${up} up${stuck ? ` · ${stuck} with input staged` : ""}` },
     { v: inflight.length, l: "Work in flight", cls: inflight.length ? "good" : "",
       sub: `${inflight.length - blocked} moving${blocked ? ` · ${blocked} blocked` : ""}`
         + `${convoys ? ` · ${convoys} convoy${convoys === 1 ? "" : "s"}` : ""}` },
+    { v: scheduled, l: "Scheduled",
+      cls: q?.state === "no-daemon" ? "alert" : q?.state === "dispatching" ? "good" : "",
+      sub: q ? `${q.headline.toLowerCase()} · ${num(q.capacity?.free)} of ${num(q.capacity?.max)} slots free`
+        : "queue not read yet" },
     { v: num(s.summary?.rig_count), l: "Rigs", sub: `${num(s.summary?.polecat_count)} polecats · ${num(s.summary?.crew_count)} crew` },
     { v: num(ready.summary?.total), l: "Ready work", sub: `P1 ${num(ready.summary?.p1_count)} · P2 ${num(ready.summary?.p2_count)}` },
     { v: num(s.summary?.active_hooks), l: "Active hooks", sub: "work on an agent" },
@@ -653,17 +663,20 @@ function renderWorkView() {
   const s = dataOf("status", {}) || {};
   renderWorkChips();
   renderFlight(s);
+  renderQueue();
   renderConvoys(s);
   renderReady();
 }
 
 function renderWorkChips() {
   // Sources are a fixed set (town + rigs) with no timestamp of their own, so they get
-  // a fixed order, town first. A rig with work in flight but nothing ready still owns
-  // a chip — otherwise the filter could not reach the rows the tab now leads with.
+  // a fixed order, town first. A rig with work in flight or scheduled but nothing ready
+  // still owns a chip — otherwise the filter could not reach the rows the tab leads
+  // with, and a queued-but-idle rig is exactly the one somebody is filtering down to.
   const ready = dataOf("ready", {}) || {};
   const names = new Set((ready.sources || []).map((s) => s.name).filter(Boolean));
   (dataOf("flight", []) || []).forEach((b) => b.rig && names.add(b.rig));
+  ((dataOf("queue", {}) || {}).rigs || []).forEach((b) => b.rig && names.add(b.rig));
   const sources = byKey([...names], (n) => (n === "town" ? "0" : "1" + n));
   $("#work-chips").innerHTML = [["all", "All"], ...sources.map((n) => [n, n])].map(([k, label]) =>
     `<button class="chip ${state.source === k ? "is-active" : ""}" data-src="${esc(k)}">${esc(label)}</button>`).join("")
@@ -734,6 +747,169 @@ function renderFlight(s) {
   $("#flight").innerHTML = errNote("flight") + (ordered.length ? rows
     : empty(fm.items.length ? "Nothing in flight matches that filter" : "Nothing in flight"));
 }
+
+/* ---------------- queue ----------------
+   What the scheduler is holding but has not slung, and why none of it is moving.
+
+   Deferred dispatch queues work instead of slinging it, and that turns a stalled town
+   and a finished one into the same picture: In flight empty, nobody working, no error
+   anywhere. So this section leads with a VERDICT and not with a list. The sentence, the
+   capacity arithmetic behind it and the reason each item cannot go are all decided by
+   the read (queued.py) rather than here — what is wrong with a town is not a
+   rendering judgement, and two places deciding it is two places to disagree.
+
+   Nothing here is carried by colour: the verdict is a word in the badge as well as a
+   dot, every row's state is a badge that says "Blocked" or "Ready to dispatch", and a
+   blocked row names its blocker in text on the row itself. The row clips that line at
+   one line and expands onto the whole list of blockers — the first of the three
+   recovery shapes CLAUDE.md names, and the reason this is an expandRow(). */
+
+/* verdict -> how it is drawn. Grey is a deliberate state (paused, empty, direct
+   dispatch off) exactly as a parked rig is grey: a decision, not a fault. Yellow is
+   the town being busy or blocked, which is normal and still worth reading. Red is
+   reserved for the one case where something is actually broken. */
+const QUEUE_STATES = {
+  dispatching: { dot: "busy", cls: "is-moving" },
+  empty: { dot: "done", cls: "is-idle" },
+  direct: { dot: "done", cls: "is-idle" },
+  paused: { dot: "done", cls: "is-held" },
+  "all-blocked": { dot: "warn", cls: "is-held" },
+  "no-capacity": { dot: "warn", cls: "is-held" },
+  "no-daemon": { dot: "off", cls: "is-stalled" },
+};
+const queueLook = (q) => QUEUE_STATES[q.state] || { dot: "", cls: "is-idle" };
+
+/* The capacity breakdown, in the order the bead that asked for it named: the two
+   numbers that decide whether anything can dispatch, then where the slots went. Every
+   one is drawn even at zero — "recovery 0" is as much of the answer as "recovery 6",
+   and a row that vanished when it was fine would be a row nobody could learn to read. */
+const CAPACITY_FIELDS = [
+  ["working", "working"], ["recovery_blocked", "in recovery"],
+  ["reservations", "reserved"], ["reusable_idle", "reusable idle"],
+  ["pending_mr", "pending MR"],
+];
+
+/** The verdict box: what the scheduler is doing, why, and the numbers it decided on.
+    Always drawn when the read has landed, whatever the filters say — a filter is a
+    question about the list, and this is a statement about the town. */
+function queueBanner(q) {
+  const look = queueLook(q);
+  const cap = q.capacity || {};
+  const notes = (q.notes || []).map((n) => `<li>${esc(n)}</li>`).join("");
+  return `
+    <div class="qstate ${look.cls}" role="group" aria-label="Dispatch state">
+      <div class="qstate-head">
+        <i class="dot ${look.dot}"></i>
+        <strong>${esc(q.headline || "Scheduler")}</strong>
+        ${q.paused ? '<span class="badge warn">paused</span>' : ""}
+        ${q.last_dispatch_at
+          ? `<span class="muted">last dispatch ${esc(ago(q.last_dispatch_at))}</span>` : ""}
+      </div>
+      <p class="qstate-why">${esc(q.reason || "")}</p>
+      ${notes ? `<ul class="qstate-notes">${notes}</ul>` : ""}
+      <div class="qstate-caps">
+        <span class="stat"><b>${esc(num(cap.free))} of ${esc(num(cap.max))}</b><span>slots free</span></span>
+        ${CAPACITY_FIELDS.map(([k, label]) =>
+          `<span class="stat"><b>${esc(num(cap[k]))}</b><span>${esc(label)}</span></span>`).join("")}
+      </div>
+    </div>`;
+}
+
+/** "waiting on gc-ebv — Planning loop… (hooked)", on the row itself. The whole point
+    of the bead: a blocked item names what is in the way rather than showing a glyph.
+    One blocker on the row and the rest under the fold, because the row is one line. */
+function blockerLine(it) {
+  const bb = it.blocked_by || [];
+  if (!bb.length) return it.blocked_note ? `blocked — ${it.blocked_note}` : "";
+  const first = bb[0];
+  const named = `${first.id}${first.title ? ` — ${first.title}` : ""}`
+    + `${first.status ? ` (${first.status})` : ""}`;
+  return `waiting on ${named}${bb.length > 1 ? ` · and ${bb.length - 1} more` : ""}`;
+}
+
+/** Every blocker, named, under the fold. A closed one is listed rather than hidden: a
+    scheduler still holding a bead behind something that has already closed is not
+    noise, it is the diagnosis. */
+function blockerList(it) {
+  const bb = it.blocked_by || [];
+  if (!bb.length) return "";
+  return `<div class="qblockers">
+      <span class="prose-label">Waiting on</span>
+      ${bb.map((b) => `
+        <div class="row qblocker">
+          <span class="row-main">
+            <span class="mono">${esc(b.id)}</span>
+            <span class="wrap">${esc(b.title || "not carried in this rig's backlog")}</span>
+          </span>
+          ${b.status ? `<span class="badge ${b.status === "closed" ? "ok" : "warn"}">${esc(b.status)}</span>` : ""}
+        </div>`).join("")}
+    </div>`;
+}
+
+function queueRow(it) {
+  const line = blockerLine(it);
+  return expandRow("queue", it.id, {
+    cls: `queue-item ${it.blocked ? "is-blocked" : ""}`,
+    lead: `<i class="dot ${it.blocked ? "warn" : "on"}"></i>`,
+    main: `
+      <span class="title wrap">${esc(it.title)}</span>
+      <span class="sub">
+        <span class="mono">${esc(it.id)}</span>
+        <span>${esc(it.rig)}</span>
+        ${it.assignee ? `<span>${esc(it.assignee)}</span>` : ""}
+        ${it.created_at ? `<span>filed ${esc(ago(it.created_at))}</span>` : ""}
+      </span>
+      ${line ? `<span class="bead-blocked-line">${esc(line)}</span>` : ""}`,
+    side: `
+      ${it.issue_type && it.issue_type !== "task" ? `<span class="badge ${it.issue_type === "epic" ? "epic" : ""}">${esc(it.issue_type)}</span>` : ""}
+      ${it.priority == null ? "" : `<span class="badge p${esc(it.priority)}">P${esc(it.priority)}</span>`}
+      <span class="badge ${it.blocked ? "bad" : "ok"}">${it.blocked ? "Blocked" : "Ready to dispatch"}</span>`,
+    detail: blockerList(it) + detailGrid([
+      ["Bead", it.id, "mono"],
+      ["Rig", it.rig, ""],
+      ["Stored status", it.status, ""],
+      ["Type", it.issue_type, ""],
+      ["Priority", it.priority == null ? "" : `P${it.priority}`, ""],
+      ["Assignee", it.assignee, ""],
+      ["Filed", when(it.created_at), ""],
+      ["Last touched", when(it.updated_at), ""],
+      ["Why it cannot dispatch", it.blocked ? (it.blocked_note || "") : "", "wrap"],
+    ]),
+  });
+}
+
+function renderQueue() {
+  const q = dataOf("queue", null);
+  if (loadingOf("queue")) {
+    $("#queue-state").innerHTML = "";
+    return void ($("#queue").innerHTML = SKEL);
+  }
+  $("#queue-state").innerHTML = q ? queueBanner(q) : "";
+  const blocks = (q?.rigs || []).filter((b) => state.source === "all" || b.rig === state.source);
+  const all = (q?.rigs || []).reduce((n, b) => n + b.items.length, 0);
+  let shown = 0;
+
+  const html = blocks.map((b) => {
+    const items = b.items.filter((it) => matches(it, b.rig));
+    if (!items.length) return "";
+    shown += items.length;
+    return `<div class="group-head">${esc(b.rig)} · ${items.length}
+        <span class="group-hint">${esc(`${b.ready} ready · ${b.blocked} blocked`)}</span>
+      </div>` + items.map(queueRow).join("");
+  }).join("");
+
+  // The count reports the whole queue, not the carried slice: queued.py caps the list
+  // it sends and takes the totals from gt's own counters, so a cap can shorten the rows
+  // without shortening the number beside the heading.
+  const queued = num(q?.totals?.queued);
+  $("#queue-count").textContent = !queued ? ""
+    : shown === queued ? `${queued} scheduled` : `${shown} of ${queued} scheduled`;
+  paint("#queue", errNote("queue") + (html || empty(
+    !q ? "The queue has not been read yet"
+      : all ? "Nothing scheduled matches that filter"
+        : "Nothing is scheduled")));
+}
+expander("#queue", renderQueue);
 
 /* ---------------- convoys ----------------
    A convoy is the town's own unit of tracked work — an id, the beads it tracks, and
@@ -3185,7 +3361,7 @@ function renderTrail() {
 }
 
 /* ---------------- boot ---------------- */
-["#rigs", "#escalations", "#prio", "#changelog", "#flight", "#convoys", "#work", "#agents",
+["#rigs", "#escalations", "#prio", "#changelog", "#flight", "#queue", "#convoys", "#work", "#agents",
   "#mail", "#trail", "#epics", "#blocked", "#backlog-flight", "#closed", "#backlog-rigs",
   "#backlog-status", "#backlog-type", "#board"]
   .forEach((s) => ($(s).innerHTML = '<div class="skeleton"></div><div class="skeleton"></div>'));

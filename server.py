@@ -26,6 +26,7 @@ import edit
 import flight
 import models
 import panes
+import queued
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 ENV = dict(os.environ, PATH="/opt/homebrew/bin:/usr/local/bin:" + os.environ.get("PATH", ""))
@@ -42,11 +43,18 @@ LOOPBACK = ("127.0.0.1", "localhost", "::1")
 LOCAL = False
 
 
-def _status():
-    """The last status payload, for the two reads that decorate it. Both run on the
-    scheduler and status is refreshed faster than either, so it is warm by then."""
+def _last(name):
+    """The last data a panel landed. For the reads that decorate another read rather
+    than fetching what it already has — all of them run on the scheduler, so what they
+    borrow is whatever that panel last answered, never a fetch of their own."""
     with _guard:
-        return _cache["status"]["data"]
+        return _cache[name]["data"]
+
+
+def _status():
+    """The last status payload, for the reads that decorate it. All of them run on the
+    scheduler and status is refreshed faster than any of them, so it is warm by then."""
+    return _last("status")
 
 
 def agent_models():
@@ -87,6 +95,18 @@ def work_in_flight():
     return flight.in_flight(_status(), TOWN) if _status() is not None else (None, COLD)
 
 
+def scheduled_work():
+    """The "queue" read: what the scheduler is holding, what each item is blocked
+    behind, and why nothing is dispatching — in words. The two reads above say what is
+    running and what could be started; a scheduled bead is in neither, so a stalled
+    queue and a finished town draw the same blank page without this. Unlike them it
+    borrows a *second* panel: `backlog` already knows every rig's blocks edges, which is
+    what lets a blocked item name its blocker for no extra call. See queued.py — and
+    note it is the read that can only ever *say* why nothing is dispatching, where
+    dispatch.py beside it is the write that can make something dispatch."""
+    return queued.state(run_gt, _status(), _last("backlog"))
+
+
 def planned_work():
     """The "backlog" read: every rig's whole backlog with its structure intact — the
     epic hierarchy, the blocks edges, and why each closed bead closed. The three reads
@@ -106,6 +126,12 @@ READS = {
     # cadence as ready on purpose — they answer two halves of one question, and a
     # visible skew between them reads as a bug rather than as staleness.
     "flight":      (work_in_flight, 20),
+    # The third half of the same question, on the same cadence for the same reason:
+    # what is scheduled but has not been slung yet. `gt scheduler status` is a slow
+    # call (1-3s on a quiet town) and the queue only changes when something dispatches,
+    # so this is nowhere near a request path — but it must not visibly lag the two
+    # lists it sits between either.
+    "queue":       (scheduled_work, 20),
     # The slowest read in the table, and the largest payload: `bd list --all` over
     # every rig. A plan is not a live signal — it changes when somebody files or closes
     # a bead, not between two blinks — so it is read on the order of minutes.

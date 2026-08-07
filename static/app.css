@@ -227,7 +227,7 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 /* ---------- expandable rows (agents, convoys, beads, mail, closures, rigs) ----------
    `.exp` is the shared one — see "expandable detail" in app.js. The three named ones
    predate it and keep their own markup; everything that makes them look and behave
-   alike is in the selector lists below, so a change here reaches all six. */
+   alike is in the selector lists below, so a change here reaches all seven. */
 .agent, .convoy, .bead, .exp {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius-sm); box-shadow: var(--shadow); overflow: hidden;
@@ -367,6 +367,50 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 .flight-live { margin-top: 4px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .flight.is-live .flight-live { color: var(--blue); }
 
+/* ---------- the dispatch queue ---------- */
+/* The verdict box, above the queue it is a verdict about. It is the only thing on this
+   page that separates a town with nothing to do from a town whose queue has stalled, so
+   it is drawn as a statement — dot, state in words, the sentence, then the arithmetic —
+   rather than as another row.
+   Three carriers, never one: the edge colour, the dot, and the state spelled out in the
+   heading. Grey is a decision (paused, or deferred dispatch switched off) exactly as a
+   parked rig is grey; yellow is a town that is merely busy or blocked; red is kept for
+   the one case where something is actually broken. */
+.qstate {
+  margin-bottom: 12px; padding: 12px 14px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); box-shadow: inset 3px 0 0 var(--faint), var(--shadow);
+}
+.qstate.is-moving { box-shadow: inset 3px 0 0 var(--blue), var(--shadow); }
+.qstate.is-held { box-shadow: inset 3px 0 0 var(--yellow), var(--shadow); }
+.qstate.is-stalled { box-shadow: inset 3px 0 0 var(--red), var(--shadow); }
+.qstate-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; font-size: 14px; }
+.qstate-head .muted { font-size: 11.5px; }
+/* The sentence a human reads to find out why nothing is moving. It is the answer to the
+   question the section exists to ask, so it is body text rather than a caption — and it
+   wraps, because half of it is not an answer. */
+.qstate-why { margin: 7px 0 0; font-size: 13px; overflow-wrap: anywhere; }
+/* Where the slots went, when the answer is not "agents are working". This is the
+   phantom recovery capacity that deadlocked this town said out loud. */
+.qstate-notes { margin: 7px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--yellow); }
+.qstate-notes li + li { margin-top: 3px; }
+/* The capacity breakdown, in the same `.stat` chips the Rigs card counts with. */
+.qstate-caps { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+
+/* One scheduled bead that cannot go. Edged rather than tinted, like the in-flight row
+   above it, and never edge-only: the row also carries a "Blocked" badge, a yellow dot
+   and a line naming the blocker. */
+.queue-item.is-blocked { box-shadow: inset 3px 0 0 var(--yellow), var(--shadow); }
+/* Every blocker, named, under the fold — the recovery path for the one-line version on
+   the row. A blocker that has already closed is listed rather than dropped, which is
+   why each one carries its status as a badge instead of leaving it implied. */
+.qblockers { padding: 9px 11px 2px; }
+.qblocker { padding: 6px 2px; }
+.qblocker + .qblocker { border-top: 1px solid var(--border-soft); }
+.qblocker .row-main {
+  display: flex; flex-wrap: wrap; gap: 4px 9px; align-items: baseline; font-size: 12.5px;
+}
+
 .convoy .bar-track { display: block; margin-top: 9px; }
 .convoy-detail { padding: 2px 6px 6px; background: var(--surface-2); border-top: 1px solid var(--border-soft); }
 .convoy-item + .convoy-item { border-top: 1px solid var(--border-soft); }
@@ -397,9 +441,10 @@ main { max-width: 1400px; margin: 0 auto; padding: 18px 16px 28px; }
 }
 .bead-trunc { padding: 4px 8px 8px; font-size: 11.5px; color: var(--faint); }
 
-/* What this bead is waiting on — the second half of "blocked", and the reason the
-   section exists. Red, on the row, and wrapped: it names other beads by title, and the
-   id of the bead in the way is the part that used to fall off the end. */
+/* What this bead is waiting on — the second half of "blocked", and the reason both the
+   Backlog tab's Blocked section and the Work tab's Queue exist. Red, on the row, and
+   wrapped: it names other beads by title, and the id of the bead in the way is the part
+   that used to fall off the end. */
 .bead-blocked-line {
   display: block; margin-top: 4px; font-size: 12px; color: var(--red);
   overflow-wrap: anywhere;

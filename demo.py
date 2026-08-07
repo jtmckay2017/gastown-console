@@ -6,6 +6,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 import graph
+import queued
 
 
 def _ago(**kw):
@@ -239,6 +240,47 @@ def prose(backlog_block):
     return {r["rig"]: {b["id"]: written.get(r["rig"], {}).get(b["id"], {})
                        for b in r["beads"]}
             for r in backlog_block["rigs"]}
+
+
+def _queue(status, backlog):
+    """The `queue` panel, built by running queued.py over a canned `gt scheduler
+    status --json` — the same way _backlog_rig() draws its pictures with the real
+    graph.build() rather than pasting in an SVG. The verdict, its wording and the
+    blocker join are then the live code's, so the demo is where a change to any of them
+    is checked, and a fixture cannot quietly claim a sentence the town would never say.
+
+    The state it is canned into is the one this panel was built for (gc-cdt): every slot
+    full, one of them held by a polecat in recovery rather than by a working agent, and
+    five beads scheduled behind it. That is a town where nothing is in flight, nothing
+    is wrong on any other panel, and the queue will not move — which used to be
+    indistinguishable from a town that had finished its work.
+
+    The blocked ids are the chain the backlog fixture already carries, so the queue and
+    the Backlog tab's Blocked section name the same edges. wp-141 waits on wp-142 (in
+    progress), wp-140 waits behind it, ba-31 waits on ba-40."""
+    raw = {
+        "paused": False,
+        "queued_total": 5,
+        "queued_ready": 2,
+        "active_polecats": 2,
+        "capacity": {"max": 3, "working": 2, "recovery_blocked": 1, "reusable_idle": 0,
+                     "pending_mr": 0, "reservations": 0, "free": 0, "active_sessions": 2},
+        "last_dispatch_at": _ago(minutes=26),
+        "beads": [
+            {"id": "wp-141", "title": "Point the shared Button at the new tokens",
+             "status": "open", "target_rig": "web_platform", "blocked": True},
+            {"id": "wp-140", "title": "Delete the four dead button variants",
+             "status": "open", "target_rig": "web_platform", "blocked": True},
+            {"id": "ba-31", "title": "Invoice totals drift by a cent on split refunds",
+             "status": "open", "target_rig": "billing_api", "blocked": True},
+            {"id": "ba-34", "title": "Retry webhook deliveries with exponential backoff",
+             "status": "open", "target_rig": "billing_api", "blocked": False},
+            {"id": "hq-48m", "title": "Adopting an existing repo skips provisioning",
+             "status": "open", "target_rig": "town", "blocked": False},
+        ],
+    }
+    data, _ = queued.state(lambda argv: (raw, None), status, backlog)
+    return data
 
 
 def _tracked(id_, title, status, assignee=""):
@@ -573,6 +615,8 @@ def fixtures():
         "panes": panes,
         "watch": watch,
         "backlog": backlog,
+        # Built last of the panels because it reads two of the others — see _queue().
+        "queue": _queue(status, backlog),
         # Every list below arrives deliberately out of order — the console sorts each one
         # newest-first itself (gc-feh), and a pre-sorted fixture would hide a regression.
         # `gt mail inbox --json`, real shape — verified against a live town, and richer
