@@ -4,6 +4,8 @@ A web admin console for [Gas Town](https://github.com/steveyegge/gastown), the m
 orchestrator. One page that answers *what are my agents doing, what work is queued, and what
 needs me* — on a laptop or a phone.
 
+**NOTE: This repo is constantly updated by my town as I give feedback during use.**
+
 Python standard library only. No npm, no pip, no build step.
 
 ![Overview](docs/overview-dark.png)
