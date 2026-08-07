@@ -25,6 +25,23 @@ def _pane(activity, note="", staged="", attached=False):
     return {"activity": activity, "note": note, "staged": staged, "attached": attached}
 
 
+def _screen(pane, *body):
+    """A synthetic Claude Code screen for the `watch` read, shaped the way capture-pane
+    hands one over: transcript, the status line, the input box, the footer. Box-drawing
+    characters are in here on purpose — they are most of what a real pane is made of,
+    and the watch panel has to render them at phone width without breaking the page."""
+    rule = "─" * 66
+    lines = ["", *body, ""]
+    if pane["note"]:
+        lines += [pane["note"], ""]
+    lines += ["╭" + rule + "╮",
+              ("│ ❯ " + pane["staged"]).ljust(67) + "│",
+              "╰" + rule + "╯",
+              "  esc to interrupt · ctrl+t for todos" if pane["activity"] == "working"
+              else "  ? for shortcuts · /help for commands"]
+    return "\n".join(lines)
+
+
 def _issue(id_, title, priority, type_="task", parent=None, hours=3):
     return {"id": id_, "title": title, "priority": priority, "issue_type": type_,
             "status": "open", "parent": parent, "created_at": _ago(days=2),
@@ -147,6 +164,56 @@ def fixtures():
         "ba-toast": _pane("working", "✳ Percolating… (55s · ↓ 3.7k tokens)"),
     }
 
+    # The `watch` read: one agent's whole screen, keyed by tmux session exactly as
+    # panes.watched() returns it. Every session above gets one, because the terminal
+    # affordance appears on every session the panes read knows about — a demo where
+    # half the icons open an empty panel would read as a bug in the feature.
+    transcripts = {
+        "hq-mayor": [
+            "● I'll work out which rig should take the split-refund bug.",
+            "",
+            "● Bash(gt rig list --json)",
+            "  ⎿  3 rigs · billing_api operational, 1 polecat idle",
+            "",
+            "● billing_api owns the ledger code, so it goes there. Slinging ba-31.",
+        ],
+        "hq-deacon": [
+            "● Patrol complete. 3 rigs checked, no stalled sessions.",
+            "",
+            "  Next patrol would normally start on its own, but you asked me to",
+            "  confirm the cadence first.",
+        ],
+        "wp-toast": [
+            "● Read(app/session.py)",
+            "  ⎿  Read 214 lines",
+            "",
+            "● The cookie is reissued on login but not on privilege change — that is",
+            "  the whole bug. Rotating in _elevate() covers both call sites.",
+            "",
+            "● Update(app/session.py)",
+            "  ⎿  Updated with 6 additions and 1 removal",
+            "",
+            "● Bash(pytest tests/test_session.py -q)",
+            "  ⎿  14 passed in 1.82s",
+        ],
+        "wp-witness": [
+            "● Bash(gt mq list --json)",
+            "  ⎿  2 MRs queued · wp-120 pre-verified, wp-118 needs gates",
+            "",
+            "● Verifying wp-118 before the refinery batches it.",
+        ],
+        "wp-crew-joel": [
+            "● Anything else you want picked up this afternoon?",
+        ],
+    }
+    generic = [
+        "● Bash(gt hook)",
+        "  ⎿  Nothing on the hook.",
+        "",
+        "● Standing by.",
+    ]
+    watch = {s: _screen(p, *transcripts.get(s, generic)) for s, p in panes.items()}
+
     ready = {
         "sources": [
             {"name": "town", "issues": [
@@ -197,6 +264,7 @@ def fixtures():
         "dogs": dogs,
         "models": models,
         "panes": panes,
+        "watch": watch,
         # Every list below arrives deliberately out of order — the console sorts each one
         # newest-first itself (gc-feh), and a pre-sorted fixture would hide a regression.
         "mail": [

@@ -51,6 +51,13 @@ def agent_panes():
     return panes.by_session(_status())
 
 
+def watched_panes():
+    """The "watch" read: the whole screen of any session an operator has a watch view
+    open on, so the Agents tab can show a live terminal. Costs nothing when nobody is
+    watching — see panes.watch() for the lease that turns it on and off."""
+    return panes.watched(_status())
+
+
 def work_in_flight():
     """The "flight" read: every bead that is not open and not closed, and who holds
     it. `gt ready` drops a bead the moment somebody picks it up and no `gt` read
@@ -86,6 +93,11 @@ READS = {
     # working right now" and a stale answer to that is the bug it exists to fix. It
     # is also the cheapest — a capture-pane per session, no Dolt, no `gt`.
     "panes":       (agent_panes, 6),
+    # The only read that exists solely while somebody is looking: one agent's whole
+    # screen, for the watch view on the Agents tab. Fast, because a terminal you are
+    # watching at 6s reads as frozen; affordable at that cadence only because it does
+    # nothing at all unless a watch lease is open, and at most three ever are.
+    "watch":       (watched_panes, 2),
 }
 
 # Concurrent `gt` calls contend on the Dolt server, so keep the fan-out small.
@@ -255,6 +267,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._file("index.html", qs)
         if u.path.startswith("/static/"):
             return self._file(u.path[len("/static/"):], qs)
+        # ?watch=<session> renews a lease on the full-pane capture of one tmux session.
+        # Like ?fresh=1 it does not do the work — it writes a name and an expiry into a
+        # dict that the scheduler reads a beat later (see panes.watch). The poll that
+        # draws the watch view is the same poll that keeps it alive, so nothing has to
+        # be closed and no lease outlives the panel that asked for it.
+        for session in qs.get("watch", [])[:1]:
+            if panes.watch(session):
+                mark_due("watch")   # a newly opened watch, so the first frame is not a wait
         if u.path == "/api/snapshot":
             if qs.get("fresh", ["0"])[0] == "1":
                 mark_due()

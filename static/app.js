@@ -70,6 +70,11 @@ const state = {
   expanded: new Set(),
   // Same, for the convoy rows on the Work tab, keyed by convoy id.
   convoys: new Set(),
+  // The tmux session whose terminal is open in the watch view, and the last `watch`
+  // panel fetched for it. One at a time: watching is an act of attention, and two
+  // live terminals on one screen is two things nobody is reading. See watchView().
+  watch: null,
+  watchPanel: null,
 };
 
 /* ---------------- theme ---------------- */
@@ -124,7 +129,12 @@ function schedule() {
   if ($("#auto").checked) timer = setInterval(() => load(false), 8000);
 }
 $("#auto").onchange = schedule;
-document.addEventListener("visibilitychange", () => (document.hidden ? clearInterval(timer) : schedule()));
+// The watch view keeps its own faster timer (see watchSchedule) — it is not the Auto
+// toggle's business, but a hidden tab stops both.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) clearInterval(timer); else schedule();
+  watchSchedule();
+});
 
 const panel = (n) => state.snap?.panels?.[n] || {};
 const dataOf = (n, dflt) => { const p = panel(n); return p.data ?? dflt; };
@@ -772,6 +782,68 @@ function agentDetail(a, models, ctx, work) {
     .join("")}</dl>`;
 }
 
+/* ---------------- watching a terminal ----------------
+   The operator wants to see what an agent is doing, and a browser cannot attach a
+   tmux session. So the console shows the agent's screen instead — which is better
+   than an attach rather than a substitute for one: it works on a phone, it needs no
+   capability the console did not already have (panes.py has been capturing screens
+   since gc-vy3), and it cannot type. A real attach is offered beside it, as a command
+   to paste, for the times the operator wants to interact rather than to watch.
+
+   READ-ONLY IS THE WHOLE POINT, not an unfinished edge. Synthetic input into a pane
+   merges with whatever the agent has staged in its input box and submits the pair
+   (hq-97l, hq-cat) — so a "just send Enter" button here would submit half-written
+   instructions belonging to somebody else. There is no key path in this view and
+   there is no write endpoint behind it.
+
+   The cost is kept off both hot paths by a lease: naming the session on the poll
+   below is what makes the scheduler capture it, and going quiet is what makes it
+   stop. Nothing is captured for an agent nobody is looking at, and nothing at all is
+   captured on the request path — see panes.watch(). */
+
+/** Shell-quote for the attach command shown beside the view — it is text to paste,
+    so it has to survive a session name with a space in it. */
+const shq = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, "'\\''")}'`);
+
+/** The `tmux attach` the operator would run themselves. The town's socket is in the
+    status read; gt reports it either as a path (private socket file, -S) or as a bare
+    name (-L). Offered as text, never run — the console has no shell passthrough. */
+function attachCmd(session) {
+  const t = (dataOf("status", {}) || {}).tmux || {};
+  const sock = String(t.socket_path || t.socket || "").trim();
+  const where = sock ? `${sock.includes("/") ? "-S" : "-L"} ${shq(sock)} ` : "";
+  return `tmux ${where}attach -t ${shq(session)}`;
+}
+
+const watchAge = (p) => (p.error ? p.error
+  : p.age == null ? "connecting…" : `live · ${Math.round(p.age)}s behind`);
+
+/** The live view: one agent's whole screen, refreshed by pullWatch() on its own two
+    second timer rather than by the page render, so the rest of the tab is not rebuilt
+    twenty times a minute to keep one panel moving. */
+function watchView(a) {
+  const p = state.watchPanel || {};
+  const text = (p.data || {})[a.session];
+  const cmd = attachCmd(a.session);
+  return `
+    <div class="watch">
+      <div class="watch-head">
+        <i class="dot busy"></i>
+        <span class="watch-title">Watching <span class="mono">${esc(a.session)}</span></span>
+        <span class="watch-age muted" id="watch-age">${esc(watchAge(p))}</span>
+        <button type="button" class="btn" data-watch="${esc(a.session)}">Close</button>
+      </div>
+      <pre class="watch-screen ${text === undefined ? "is-waiting" : ""}" id="watch-screen"
+           tabindex="0" aria-label="Live terminal output for ${esc(a.session)}">${
+    esc(text === undefined ? "waiting for the first capture…" : text)}</pre>
+      <div class="watch-foot">
+        <span class="muted">Read-only — this view cannot send keystrokes.</span>
+        <code class="mono watch-cmd">${esc(cmd)}</code>
+        <button type="button" class="btn" data-copy="${esc(cmd)}">Copy</button>
+      </div>
+    </div>`;
+}
+
 function agentRow(a, models, ctx, work) {
   const st = agentState(a, ctx);
   const key = agentKey(a);
@@ -782,28 +854,46 @@ function agentRow(a, models, ctx, work) {
   const held = work.slice(0, 2).map((b) =>
     `<span class="mono">${esc(b.id)}</span> ${esc(b.title)}`).join(" · ")
     + (work.length > 2 ? ` <span class="muted">+${work.length - 2} more</span>` : "");
+  // Only an agent whose session tmux is actually serving right now can be watched,
+  // so the affordance is absent — not disabled — everywhere else: a parked rig's
+  // agents, a crew workspace nobody started, a dog that was never launched. The pane
+  // map is that list, which is also why it is the thing tested rather than a.session.
+  const live = !!(ctx.live && ctx.panes[a.session || ""]);
+  const watching = live && state.watch === a.session;
   return `
     <div class="agent ${st.key === "working" ? "is-working" : ""} ${st.key === "staged" ? "is-staged" : ""}">
-      <button type="button" class="row agent-row" data-agent="${esc(key)}"
-              aria-expanded="${open}" aria-controls="${esc(detailId(key))}">
-        <i class="dot ${st.dot}"></i>
-        <span class="row-main">
-          <span class="title">${esc(a.name)} <span class="muted mono">${esc(a.address || "")}</span></span>
-          <span class="sub">
-            <span class="badge">${esc(a.rig)}</span>
-            <span>${esc(a.role || "")}</span>
-            <span class="mono">${esc(a.session || "no session")}</span>
-            ${a.unread_mail ? `<span class="badge warn">${esc(a.unread_mail)} mail</span>` : ""}
+      <div class="agent-head">
+        <button type="button" class="row agent-row" data-agent="${esc(key)}"
+                aria-expanded="${open}" aria-controls="${esc(detailId(key))}">
+          <i class="dot ${st.dot}"></i>
+          <span class="row-main">
+            <span class="title">${esc(a.name)} <span class="muted mono">${esc(a.address || "")}</span></span>
+            <span class="sub">
+              <span class="badge">${esc(a.rig)}</span>
+              <span>${esc(a.role || "")}</span>
+              <span class="mono">${esc(a.session || "no session")}</span>
+              ${a.unread_mail ? `<span class="badge warn">${esc(a.unread_mail)} mail</span>` : ""}
+            </span>
+            ${work.length ? `<span class="agent-work">${held}</span>` : ""}
+            ${note ? `<span class="agent-note">${esc(note)}</span>` : ""}
           </span>
-          ${work.length ? `<span class="agent-work">${held}</span>` : ""}
-          ${note ? `<span class="agent-note">${esc(note)}</span>` : ""}
-        </span>
-        <span class="row-side">
-          ${a.has_work ? '<span class="badge ok">has work</span>' : ""}
-          <span class="badge ${st.badge}">${esc(st.label)}</span>
-          <svg viewBox="0 0 24 24" class="ico chev" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
-        </span>
-      </button>
+          <span class="row-side">
+            ${a.has_work ? '<span class="badge ok">has work</span>' : ""}
+            <span class="badge ${st.badge}">${esc(st.label)}</span>
+            <svg viewBox="0 0 24 24" class="ico chev" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+          </span>
+        </button>
+        ${live ? `
+        <button type="button" class="watch-btn ${watching ? "is-on" : ""}"
+                data-watch="${esc(a.session)}" aria-pressed="${watching}"
+                title="${watching ? "Stop watching" : "Watch this terminal (read-only)"}"
+                aria-label="Watch ${esc(a.name)}'s terminal">
+          <svg viewBox="0 0 24 24" class="ico" aria-hidden="true">
+            <rect x="2.5" y="4" width="19" height="16" rx="2.5"/><path d="m7 10 2.6 2.6L7 15.2M13 15.2h4"/>
+          </svg>
+        </button>` : ""}
+      </div>
+      ${watching ? watchView(a) : ""}
       ${open ? agentDetail(a, models, ctx, work) : ""}
     </div>`;
 }
@@ -815,6 +905,10 @@ function renderAgents(s) {
   // after the agents themselves land. Missing simply means no Model row.
   const models = dataOf("models", {}) || {};
   const ctx = agentCtx();
+  // The watched agent exited, tmux dropped its session, or the pane read itself went
+  // away. Any of those and the view cannot draw — so close it, rather than leave a
+  // frozen screen on the page and a lease being renewed for a panel nobody has.
+  if (state.watch && !(ctx.live && ctx.panes[state.watch])) closeWatch();
   // The same model the Work tab draws, read from the other end: there the bead finds
   // its agent, here the agent finds its beads. gc-vy3 owns whether a row is working;
   // this owns what it is working on.
@@ -844,23 +938,122 @@ function renderAgents(s) {
 
   // An 8s auto-refresh rebuilds this subtree; expansion lives in state.expanded so it
   // survives, and the focused row is restored so keyboard focus does not jump to <body>.
-  const focused = document.activeElement?.dataset?.agent;
+  const focused = document.activeElement?.dataset?.agent || document.activeElement?.dataset?.watch;
+  // A watch view survives this rebuild, so its scroll position has to as well —
+  // otherwise the terminal jumps to the top every eight seconds. Following the tail
+  // is the default; a reader who scrolled up to look at something keeps their place.
+  const keep = scrollOf($("#watch-screen"));
   // panes, dogs and flight each carry a slice of this tab; say so when one is failing
   // rather than quietly showing a town that looks asleep, or unassigned.
   $("#agents").innerHTML = errNote("status") + errNote("panes") + errNote("dogs")
     + errNote("flight") + (agents.length ? rows : empty("No agents"));
-  if (focused) $$("#agents [data-agent]").find((el) => el.dataset.agent === focused)?.focus();
+  restoreScroll($("#watch-screen"), keep);
+  if (focused) $$("#agents [data-agent], #agents [data-watch]")
+    .find((el) => (el.dataset.agent || el.dataset.watch) === focused)?.focus();
+}
+
+/** Whether a scroller is parked at the tail, and where it is if not. */
+const scrollOf = (el) => (el
+  ? { top: el.scrollTop, tail: el.scrollHeight - el.scrollTop - el.clientHeight < 24 }
+  : null);
+function restoreScroll(el, s) {
+  if (!el) return;
+  el.scrollTop = !s || s.tail ? el.scrollHeight : s.top;
+}
+
+/** Swap the live view onto one session, or off it. One at a time, so the previous
+    session's lease simply stops being renewed and its capture stops with it. */
+function toggleWatch(session) {
+  state.watch = state.watch === session ? null : session;
+  state.watchPanel = null;
+  renderAgents(dataOf("status", {}) || {});
+  watchSchedule();
+  if (state.watch) pullWatch();
+}
+function closeWatch() {
+  state.watch = null;
+  state.watchPanel = null;
+  watchSchedule();
+}
+
+/** The watch panel alone, on its own timer. Deliberately not part of the 8s snapshot
+    poll: a terminal wants a couple of seconds to look alive, and re-rendering the
+    whole tab that often would churn every other row to animate one panel. */
+let watchTimer = null;
+function watchSchedule() {
+  clearInterval(watchTimer);
+  // A hidden tab stops asking, so the lease lapses and the server stops capturing —
+  // the console does not watch a terminal nobody is looking at.
+  if (state.watch && !document.hidden) watchTimer = setInterval(pullWatch, 2000);
+}
+async function pullWatch() {
+  const session = state.watch;
+  if (!session) return;
+  try {
+    // The `watch=` parameter is the lease renewal; the response is the last capture
+    // the scheduler took. Neither half of that blocks on tmux — see panes.watch().
+    const r = await fetch(`/api/panel/watch?watch=${encodeURIComponent(session)}`,
+      { headers: { Accept: "application/json" } });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const p = await r.json();
+    if (state.watch !== session) return;         // closed or switched mid-flight
+    state.watchPanel = p;
+  } catch (e) {
+    state.watchPanel = { ...(state.watchPanel || {}), error: e.message };
+  }
+  paintWatch();
+}
+
+/** Patch the open panel in place. textContent, not innerHTML: this is the most
+    directly agent-authored string in the app and it never becomes markup. */
+function paintWatch() {
+  const pre = $("#watch-screen");
+  if (!pre) return;
+  const p = state.watchPanel || {};
+  const text = (p.data || {})[state.watch];
+  const keep = scrollOf(pre);
+  if (text !== undefined) {
+    pre.textContent = text;
+    pre.classList.remove("is-waiting");
+  }
+  const age = $("#watch-age");
+  if (age) age.textContent = watchAge(p);
+  restoreScroll(pre, keep);
 }
 
 // One delegated listener: #agents is replaced wholesale on every render, per-row
-// handlers would not be.
+// handlers would not be. The terminal button is a sibling of the row button rather
+// than a child — buttons do not nest — so it is matched first and on its own.
 $("#agents").addEventListener("click", (ev) => {
+  const watch = ev.target.closest("[data-watch]");
+  if (watch) return void toggleWatch(watch.dataset.watch);
+  const copy = ev.target.closest("[data-copy]");
+  if (copy) return void copyCmd(copy);
   const row = ev.target.closest("[data-agent]");
   if (!row) return;
   const key = row.dataset.agent;
   if (!state.expanded.delete(key)) state.expanded.add(key);
   renderAgents(dataOf("status", {}) || {});
 });
+
+// Escape closes the terminal, the way it closes everything else that covers a page.
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && state.watch) toggleWatch(state.watch);
+});
+
+/** Copy the attach command. The clipboard API needs a secure context, which a console
+    reached over http on a LAN address is not — so the command is on the page as
+    selectable text either way and this only ever saves a gesture. */
+async function copyCmd(btn) {
+  const was = btn.textContent;
+  try {
+    await navigator.clipboard.writeText(btn.dataset.copy);
+    btn.textContent = "Copied ✓";
+  } catch {
+    btn.textContent = "Select it →";
+  }
+  setTimeout(() => { btn.textContent = was; }, 2500);
+}
 
 /* ---------------- mail ---------------- */
 function renderMail() {
