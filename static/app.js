@@ -103,13 +103,16 @@ const state = {
   // somebody's writing. While it is set the pane is NOT repainted by the 8s poll: see
   // paintPane. `paneNote` is what the last write said, shown once the form has closed.
   form: null, paneNote: "", paneBad: false,
-  // The Plans tab. Its own filter pair again, and its own selection — the Board's pane
+  // The Plans tab. Its own filters again, and its own selection — the Board's pane
   // and this view read one bead each and they are not the same bead: opening a card to
   // check what is blocking it must not move what somebody is reading a plan in.
+  // `plansStatus` starts at `active` rather than at `all` on purpose: most plans a town
+  // has ever written are finished, so `all` is a history book with this week's two live
+  // plans buried in it (gc-6z8).
   // `planLanded` is when the backlog read behind the open plan last landed, which is
   // how this tab notices an agent has revised the plan under the reader; `planChange`
   // is what it says about that. See renderPlans().
-  plansq: "", plansRig: "all",
+  plansq: "", plansRig: "all", plansStatus: "active",
   plan: null, planData: null, planLanded: null, planChange: null,
   planNote: "", planBad: false,
   // The map's last markup. The pictures are the biggest subtree on the page and they
